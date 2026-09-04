@@ -96,6 +96,11 @@ class APIKeyService:
             tags=data.tags or {},
             model_policy=data.model_policy.model_dump() if data.model_policy else None,
             budgets=[b.model_dump() for b in data.budgets] if data.budgets else None,
+            capture_policy=(
+                data.capture_policy.model_dump(exclude_none=True)
+                if getattr(data, "capture_policy", None)
+                else None
+            ),
         )
 
         self.session.add(api_key)
@@ -270,6 +275,8 @@ class APIKeyService:
             key_record.model_policy = updates["model_policy"]
         if "budgets" in updates:
             key_record.budgets = updates["budgets"]
+        if "capture_policy" in updates:
+            key_record.capture_policy = updates["capture_policy"]
         if "rate_limit_tier" in updates:
             key_record.rate_limit_tier = updates["rate_limit_tier"]
         if "is_active" in updates:

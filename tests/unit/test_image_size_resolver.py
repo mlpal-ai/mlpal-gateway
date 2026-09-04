@@ -8,6 +8,7 @@ gpt-image-1/1.5 and DALL-E.
 
 import pytest
 
+from mlpal_assistants_service.adapters.base import ImageQuality
 from mlpal_assistants_service.adapters.base import ImageSizeResolver as R
 
 
@@ -63,3 +64,49 @@ class TestHelpers:
         assert R._parse_explicit_pixels("2048x2048") == (2048, 2048)
         assert R._parse_explicit_pixels("16:9") is None
         assert R._parse_explicit_pixels("square") is None
+
+
+class TestGoogleImageSize:
+    """Gemini 3.x takes resolution as `image_size` (512px/1K/2K/4K), separate
+    from aspect ratio. Pixels imply a tier, `hd` lifts to 2K, models clamp."""
+
+    PRO = "gemini-3-pro-image"
+    FLASH = "gemini-3.1-flash-image"
+    LITE = "gemini-3.1-flash-lite-image"
+
+    def test_bare_tier_token_taken_literally(self):
+        assert R.to_image_size_google("4K", model=self.PRO) == "4K"
+        assert R.to_image_size_google("2k", model=self.PRO) == "2K"
+        assert R.to_image_size_google("1K", model=self.PRO) == "1K"
+
+    def test_bare_tier_token_has_square_aspect(self):
+        assert R.to_aspect_ratio_google("4K") == "1:1"
+        assert R.to_aspect_ratio_google("512px") == "1:1"
+
+    @pytest.mark.parametrize(
+        "pixels,tier",
+        [("1024x1024", "1K"), ("1536x864", "1K"), ("1792x768", "1K"),
+         ("2048x1152", "2K"), ("2048x2048", "2K"), ("2560x1440", "2K"),
+         ("3840x2160", "4K"), ("4096x1792", "4K"), ("4096x4096", "4K")],
+    )
+    def test_explicit_pixels_infer_tier(self, pixels, tier):
+        assert R.to_image_size_google(pixels, model=self.PRO) == tier
+
+    def test_aspect_ratio_defaults_to_1k(self):
+        assert R.to_image_size_google("16:9", model=self.PRO) == "1K"
+        assert R.to_image_size_google("landscape", model=self.PRO) == "1K"
+
+    def test_hd_lifts_to_2k(self):
+        assert R.to_image_size_google("16:9", ImageQuality.HD, self.PRO) == "2K"
+        assert R.to_image_size_google("1024x1024", ImageQuality.HD, self.PRO) == "2K"
+        # ...but never lowers an explicit 4K.
+        assert R.to_image_size_google("3840x2160", ImageQuality.HD, self.PRO) == "4K"
+
+    def test_lite_is_1k_only(self):
+        assert R.to_image_size_google("4K", model=self.LITE) == "1K"
+        assert R.to_image_size_google("2048x2048", ImageQuality.HD, self.LITE) == "1K"
+
+    def test_512px_only_for_flash(self):
+        assert R.to_image_size_google("512px", model=self.FLASH) == "512px"
+        assert R.to_image_size_google("512px", model=self.PRO) == "1K"
+        assert R.to_image_size_google("512x512", model=self.FLASH) == "1K"  # pixels never go sub-1K

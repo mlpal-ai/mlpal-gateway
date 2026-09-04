@@ -44,21 +44,28 @@ class CaptureConfig:
     source: str  # "runtime" | "env" | "file" | "default"
     max_body_kb: int
     retention_days: int
+    # Deployment default for keys with NO capture_policy ("inherit"). "on"
+    # preserves historical behavior (subsystem enabled = capture everything);
+    # "off" turns the subsystem into an allow-list where only keys with an
+    # explicit {"mode": "on"} are captured.
+    key_default: str = "on"
 
 
-def _file_settings() -> tuple[bool | None, int, int]:
+def _file_settings() -> tuple[bool | None, int, int, str]:
     section = file_config_section("capture")
     enabled = section.get("enabled")
+    key_default = section.get("key_default")
     return (
         enabled if isinstance(enabled, bool) else None,
         int(section.get("max_body_kb", 256)),
         int(section.get("retention_days", 7)),
+        key_default if key_default in ("on", "off") else "on",
     )
 
 
 def resolve_config(runtime_override: bool | None) -> CaptureConfig:
     """Pure precedence resolution — unit-testable without I/O."""
-    file_enabled, max_body_kb, retention_days = _file_settings()
+    file_enabled, max_body_kb, retention_days, key_default = _file_settings()
     env_raw = os.environ.get("MLPAL_CAPTURE_PAYLOADS")
 
     if runtime_override is not None:
@@ -69,7 +76,42 @@ def resolve_config(runtime_override: bool | None) -> CaptureConfig:
         enabled, source = file_enabled, "file"
     else:
         enabled, source = False, "default"
-    return CaptureConfig(enabled, source, max_body_kb, retention_days)
+    return CaptureConfig(enabled, source, max_body_kb, retention_days, key_default)
+
+
+def key_allows_capture(
+    capture_policy: dict | None,
+    key_default: str,
+    *models: str | None,
+) -> bool:
+    """Per-key capture decision — pure, zero I/O, called on the hot path
+    BEFORE a capture task is spawned (so an opted-out key doesn't even pay
+    the task spawn).
+
+    Semantics (the operator subsystem toggle is checked separately and ANDed
+    by callers; this function answers only "does the KEY allow it"):
+      * policy None      -> the deployment key_default decides ("on"/"off")
+      * mode "off"       -> False, always — the hard promise
+      * mode "on"        -> True, subject to the models filter
+      * "models" present -> capture only when ANY given tag (requested or
+                            resolved) is in the list; no globbing — capture
+                            is a debug tool, exactness beats convenience
+    Malformed policies fail CLOSED (no capture): a privacy control must
+    degrade toward not storing data.
+    """
+    if capture_policy is None:
+        return key_default == "on"
+    if not isinstance(capture_policy, dict):
+        return False
+    mode = capture_policy.get("mode")
+    if mode == "off":
+        return False
+    if mode != "on":
+        return False
+    allowed = capture_policy.get("models")
+    if not allowed:
+        return True
+    return any(m is not None and m in allowed for m in models)
 
 
 class CaptureState:

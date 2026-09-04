@@ -72,10 +72,9 @@ class CanonicalUsage:
         """Build canonical usage from an adapter ``TokenUsage`` (OpenAI/Google).
 
         ``input_tokens`` from these providers already includes the cached prefix
-        (``cached_tokens`` is a subset), and — matching v1 billing — the full
-        input is billed at the input rate with no cache discount, so ``raw`` is
-        left None to force the flat CU path. ``cache_read`` is surfaced for the
-        client's Anthropic-shaped usage block and analytics, not for discounting.
+        (``cached_tokens`` is a subset); ``raw`` is left None to force the flat
+        CU path, which bills the cached portion at the provider's cache-read
+        rate and the remainder at the input rate (matching v1 billing).
         """
         return cls(
             input=int(getattr(usage, "input_tokens", 0) or 0),
@@ -85,12 +84,32 @@ class CanonicalUsage:
             raw=None,
         )
 
-    def compute_units(self, input_cu_per_token: Decimal, output_cu_per_token: Decimal) -> Decimal:
+    def compute_units(
+        self,
+        input_cu_per_token: Decimal,
+        output_cu_per_token: Decimal,
+        cache_read_cu_per_token: Decimal | None = None,
+    ) -> Decimal:
         """Tier-accurate CU. Uses the provider's raw usage when available
-        (Anthropic cache tiers); otherwise a flat input/output computation."""
+        (Anthropic cache tiers); otherwise a flat input/output computation.
+        `cache_read_cu_per_token` overrides the global cache-read multiplier
+        for models with their own cache-read list price."""
         if self.raw is not None:
-            return compute_units_from_usage(self.raw, input_cu_per_token, output_cu_per_token)
+            return compute_units_from_usage(
+                self.raw, input_cu_per_token, output_cu_per_token,
+                cache_read_cu_per_token,
+            )
+        # Flat path = from_openai semantics: `input` INCLUDES the cached
+        # subset. Bill the uncached portion at the input rate and the cached
+        # portion at the provider's cache-read rate.
+        cached = min(Decimal(self.cache_read), Decimal(self.input))
+        cache_rate = (
+            cache_read_cu_per_token
+            if cache_read_cu_per_token is not None
+            else input_cu_per_token
+        )
         return (
-            Decimal(self.input) * input_cu_per_token
+            (Decimal(self.input) - cached) * input_cu_per_token
+            + cached * cache_rate
             + Decimal(self.output) * output_cu_per_token
         )

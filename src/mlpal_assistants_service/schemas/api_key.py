@@ -11,6 +11,25 @@ BudgetUnit = Literal["usd", "cu"]
 BudgetWindow = Literal["daily", "weekly", "monthly", "lifetime"]
 
 
+class CapturePolicy(BaseSchema):
+    """Per-key payload-capture control for the Traces debugger.
+
+    mode "off" is a hard promise: request/response bodies for this key are
+    never stored, regardless of deployment settings. mode "on" opts the key
+    in (subject to the operator's capture subsystem being enabled); the
+    optional ``models`` list narrows capture to exact tags (requested or
+    resolved) — no globbing, capture is a debug tool."""
+
+    mode: Literal["on", "off"] = Field(
+        ..., description='"on" = capture this key; "off" = never capture (hard).'
+    )
+    models: list[str] | None = Field(
+        default=None,
+        max_length=50,
+        description="Exact model tags to capture (mode 'on' only). Omit = all models.",
+    )
+
+
 class ModelPolicy(BaseSchema):
     """Per-key model access control. Glob patterns; ``*``/empty allow = all;
     deny (union) wins. Applied to the requested tag and the resolved model."""
@@ -98,6 +117,10 @@ class APIKeyCreate(BaseSchema):
         default=None,
         description="Spend caps. Omit/null = no per-key budget. At most one rule per window.",
     )
+    capture_policy: CapturePolicy | None = Field(
+        default=None,
+        description="Payload-capture control. Omit/null = inherit the deployment default.",
+    )
 
     @field_validator("budgets")
     @classmethod
@@ -116,6 +139,9 @@ class APIKeyUpdate(BaseSchema):
 
     model_policy: ModelPolicy | None = Field(default=None, description="Replace model access policy.")
     budgets: list[BudgetRule] | None = Field(default=None, description="Replace spend budgets.")
+    capture_policy: CapturePolicy | None = Field(
+        default=None, description="Replace payload-capture policy (send {} semantics: see class doc)."
+    )
     rate_limit_tier: str | None = Field(
         default=None, description="Change the rate-limit tier (free/standard/premium/enterprise)."
     )
@@ -165,6 +191,9 @@ class APIKeyResponse(BaseSchema):
     created_at: datetime = Field(..., description="Creation timestamp")
     model_policy: dict | None = Field(default=None, description="Model access policy (null = unrestricted)")
     budgets: list[dict] | None = Field(default=None, description="Spend budgets (null = none)")
+    capture_policy: dict | None = Field(
+        default=None, description="Payload-capture policy (null = inherit deployment default)"
+    )
     # Derived per-response from user-level billing state — never stored on the
     # key. Orthogonal to `is_active`/lifecycle: all of a user's keys pause
     # together when their wallet is exhausted and unpause on top-up.

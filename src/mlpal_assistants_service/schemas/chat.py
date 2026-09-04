@@ -118,6 +118,15 @@ class MCPServerConfig(BaseSchema):
 # =============================================================================
 
 
+class CacheControl(BaseSchema):
+    """Anthropic-style prompt-cache breakpoint, exposed on the OpenAI wire."""
+
+    type: Literal["ephemeral"] = Field(default="ephemeral")
+    ttl: Literal["5m", "1h"] | None = Field(
+        default=None, description="Cache TTL; provider default (5m) when omitted."
+    )
+
+
 class ChatMessage(BaseSchema):
     """A single message in the conversation."""
 
@@ -145,6 +154,14 @@ class ChatMessage(BaseSchema):
         default=None,
         description="Optional name for tool messages",
     )
+    cache_control: CacheControl | None = Field(
+        default=None,
+        description=(
+            "Prompt-cache breakpoint after this message (Anthropic models; "
+            "others cache automatically and ignore it). Everything up to and "
+            "including this message becomes the cached prefix. Max 4 per request."
+        ),
+    )
 
 
 class ChatCompletionRequest(BaseSchema):
@@ -159,6 +176,15 @@ class ChatCompletionRequest(BaseSchema):
         min_length=1,
         description="Conversation messages",
     )
+
+    @field_validator("messages")
+    @classmethod
+    def _max_four_cache_breakpoints(cls, v: list[ChatMessage]) -> list[ChatMessage]:
+        # Anthropic accepts at most 4 cache_control breakpoints per request;
+        # reject here with a clear 400 instead of a provider error mid-call.
+        if sum(1 for m in v if m.cache_control is not None) > 4:
+            raise ValueError("at most 4 messages may carry cache_control")
+        return v
     temperature: float = Field(
         default=0.7,
         ge=0.0,
@@ -234,6 +260,18 @@ class TokenUsage(BaseSchema):
     input_tokens: int = Field(..., description="Number of input tokens")
     output_tokens: int = Field(..., description="Number of output tokens")
     total_tokens: int = Field(..., description="Total tokens used")
+    cached_tokens: int = Field(
+        default=0,
+        description="Input tokens served from the provider's prompt cache (subset of input_tokens)",
+    )
+    cache_write_tokens: int = Field(
+        default=0,
+        description=(
+            "Input tokens written to the provider's prompt cache this request "
+            "(subset of input_tokens; Anthropic models with cache_control). "
+            "Billed at the provider's cache-write tier."
+        ),
+    )
 
 
 class CostInfo(BaseSchema):

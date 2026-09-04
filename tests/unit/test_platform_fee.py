@@ -166,3 +166,60 @@ async def test_users_are_independent(session, managed):
     assert await _fee_rows(session, 6) == []
     progress6 = await month_progress(session, 6)
     assert progress6["platform_fee_charged"] is False
+
+
+def _cached_usage_row(user_id: int, tokens: int, cache_read: int) -> UsageLog:
+    row = _usage_row(user_id, tokens)
+    row.cc_metadata = {"cache_read_input_tokens": cache_read}
+    return row
+
+
+@pytest.mark.asyncio
+async def test_cache_reads_excluded_from_db_reseed(session, managed):
+    """2026-08-29 decision: cache READS don't count toward the free tier.
+    1,500 input tokens of which 900 are cache reads = 600 countable — below
+    the 1,000 threshold, so no fee."""
+    session.add(_cached_usage_row(9, 1500, cache_read=900))
+    await session.commit()
+
+    charged = await maybe_charge_platform_fee(session, None, 9, 600, api_key_id=1)
+    assert charged is False
+    assert await _fee_rows(session, 9) == []
+
+
+@pytest.mark.asyncio
+async def test_cache_writes_still_count(session, managed):
+    """Cache-write tokens are part of input and DO count: 1,200 input with
+    zero cache reads crosses the 1,000 threshold."""
+    session.add(_cached_usage_row(10, 1200, cache_read=0))
+    await session.commit()
+
+    charged = await maybe_charge_platform_fee(session, None, 10, 1200, api_key_id=1)
+    assert charged is True
+
+
+@pytest.mark.asyncio
+async def test_accrual_path_subtracts_cache_reads(session, managed, monkeypatch):
+    """UsageService._accrue_platform_fee passes net tokens (input+output −
+    cache_read) into the counter."""
+    from mlpal_assistants_service.services.usage import UsageService
+
+    seen = {}
+
+    async def fake_fee(sess, redis, user_id, tokens_delta, api_key_id):
+        seen.update(user_id=user_id, tokens=tokens_delta)
+        return False
+
+    monkeypatch.setattr(
+        "mlpal_assistants_service.services.platform_fee.maybe_charge_platform_fee",
+        fake_fee,
+    )
+    svc = UsageService.__new__(UsageService)
+    svc.session = session
+    svc.redis = None
+    await svc._accrue_platform_fee({
+        "status": "success", "operation": "chat", "user_id": 7, "api_key_id": 1,
+        "input_tokens": 1000, "output_tokens": 100,
+        "cc_metadata": {"cache_read_input_tokens": 800},
+    })
+    assert seen == {"user_id": 7, "tokens": 300}

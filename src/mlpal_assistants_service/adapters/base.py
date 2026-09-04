@@ -301,6 +301,11 @@ class TokenUsage:
     output_tokens: int = 0
     total_tokens: int = 0
     cached_tokens: int = 0
+    # Prompt-cache WRITES, by TTL tier (Anthropic only; billed 1.25x / 2x input).
+    # Like cached_tokens, whether input_tokens already contains them follows
+    # the adapter's cached_tokens_included_in_input.
+    cache_write_5m_tokens: int = 0
+    cache_write_1h_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.total_tokens == 0:
@@ -477,6 +482,28 @@ class ImageSizeResolver:
         "1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "4:5", "5:4", "21:9"
     }
 
+    # Gemini 3.x native image models take output resolution as a knob
+    # (`image_config.image_size`) separate from aspect ratio. Values are
+    # case-sensitive on the wire ("1K", not "1k"). Lite is 1K-only; only
+    # 3.1 Flash can render below 1K.
+    GOOGLE_IMAGE_SIZE_ALIASES: dict[str, str] = {
+        "512px": "512px",
+        "0.5k": "512px",
+        "1k": "1K",
+        "2k": "2K",
+        "4k": "4K",
+    }
+    GOOGLE_1K_ONLY_IMAGE_MODELS: set[str] = {"gemini-3.1-flash-lite-image"}
+    GOOGLE_512PX_IMAGE_MODELS: set[str] = {"gemini-3.1-flash-image"}
+    # Thresholds for inferring a Gemini tier from explicit pixels. A tier is
+    # reached by either its edge length or its pixel count, so both a square
+    # 2048x2048 (4MP) and an ultra-wide 4096x1792 (7MP) land where a caller
+    # expects. Megapixel cutoffs sit at the midpoints of ~1/~4/~16MP.
+    _GOOGLE_2K_MIN_EDGE = 2048
+    _GOOGLE_4K_MIN_EDGE = 3072
+    _GOOGLE_2K_MIN_PIXELS = 2_000_000
+    _GOOGLE_4K_MIN_PIXELS = 8_000_000
+
     @classmethod
     def normalize_to_aspect_ratio(cls, size_input: str | ImageSize) -> str:
         """
@@ -501,6 +528,10 @@ class ImageSizeResolver:
         # Check semantic presets
         if size_str in cls.PRESETS_TO_ASPECT:
             return cls.PRESETS_TO_ASPECT[size_str]
+
+        # A bare resolution tier ("2K", "512px") carries no aspect information.
+        if size_str in cls.GOOGLE_IMAGE_SIZE_ALIASES:
+            return "1:1"
 
         # Check if it's already an aspect ratio (contains ':')
         if ":" in size_str:
@@ -614,6 +645,54 @@ class ImageSizeResolver:
         return aspect_mapping.get(aspect, "1:1")
 
     @classmethod
+    def to_image_size_google(
+        cls,
+        size_input: str | ImageSize,
+        quality: ImageQuality = ImageQuality.STANDARD,
+        model: str = "",
+    ) -> str:
+        """
+        Resolve the Gemini ``image_size`` tier ("512px" | "1K" | "2K" | "4K").
+
+        Resolution order:
+        1. A bare tier token ("2K", "4k", "512px") selects that tier.
+        2. Explicit pixels infer the tier from edge length / megapixels
+           (e.g. "3840x2160" -> "4K", "2048x2048" -> "2K", "1024x1024" -> "1K").
+        3. Otherwise (aspect ratio / preset) the tier is 1K.
+
+        Then ``quality`` hd/high raises anything below 2K to 2K — including an
+        explicit "1K" or sub-2K pixels — because Gemini has no separate quality
+        knob, so resolution is how "hd" is honored. Finally the result is
+        clamped to what ``model`` can actually render.
+        """
+        if isinstance(size_input, ImageSize):
+            size_input = size_input.value
+        size_str = size_input.lower().strip()
+        wants_hd = quality in (ImageQuality.HD, ImageQuality.HIGH)
+
+        if size_str in cls.GOOGLE_IMAGE_SIZE_ALIASES:
+            tier = cls.GOOGLE_IMAGE_SIZE_ALIASES[size_str]
+        elif (dims := cls._parse_explicit_pixels(size_str)) is not None:
+            longest, pixels = max(dims), dims[0] * dims[1]
+            if longest >= cls._GOOGLE_4K_MIN_EDGE or pixels >= cls._GOOGLE_4K_MIN_PIXELS:
+                tier = "4K"
+            elif longest >= cls._GOOGLE_2K_MIN_EDGE or pixels >= cls._GOOGLE_2K_MIN_PIXELS:
+                tier = "2K"
+            else:
+                tier = "1K"
+        else:
+            tier = "2K" if wants_hd else "1K"
+
+        if wants_hd and tier in ("512px", "1K"):
+            tier = "2K"
+
+        if model in cls.GOOGLE_1K_ONLY_IMAGE_MODELS:
+            return "1K"
+        if tier == "512px" and model not in cls.GOOGLE_512PX_IMAGE_MODELS:
+            return "1K"
+        return tier
+
+    @classmethod
     def _calculate_aspect_ratio(cls, width: int, height: int) -> str:
         """Calculate simplified aspect ratio from dimensions."""
         # Map to common aspect ratios
@@ -645,7 +724,8 @@ class ImageSizeResolver:
             "providers": {
                 "openai_gpt_image": ["1024x1024", "1536x1024", "1024x1536"],
                 "openai_dalle3": ["1024x1024", "1792x1024", "1024x1792"],
-                "google_gemini": ["1:1", "16:9", "9:16", "4:3", "3:4", "3:2", "2:3"],
+                "google_gemini": sorted(cls.GOOGLE_SUPPORTED_ASPECTS),
+                "google_gemini_image_size": ["512px", "1K", "2K", "4K"],
             }
         }
 
@@ -850,6 +930,14 @@ class BaseAdapter(ABC):
     - Each adapter converts FileAttachment to provider-specific format
     - Unsupported file types raise UnsupportedModalityError
     """
+
+    # Whether this adapter's TokenUsage.input_tokens already CONTAINS the
+    # cached_tokens subset. OpenAI (prompt_tokens) and Google
+    # (promptTokenCount) include it; Anthropic's usage.input_tokens and
+    # Bedrock Converse's inputTokens exclude cache reads. Billing subtracts
+    # the cached portion only when it is included. (Verified against provider
+    # usage docs 2026-09-01.)
+    cached_tokens_included_in_input: bool = True
 
     provider_name: str
 

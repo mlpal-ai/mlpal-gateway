@@ -61,10 +61,17 @@ def _stream_chunk_to_data(chunk) -> dict:
                 "input_tokens": chunk.cost.tokens.input_tokens,
                 "output_tokens": chunk.cost.tokens.output_tokens,
                 "total_tokens": chunk.cost.tokens.total_tokens,
+                "cached_tokens": chunk.cost.tokens.cached_tokens,
+                "cache_write_tokens": chunk.cost.tokens.cache_write_tokens,
             },
             "latency_ms": chunk.cost.latency_ms,
             "compute_units": chunk.cost.compute_units,
         }
+    # The final chunk carries routing (meta-model resolution); it was being
+    # dropped at this seam while non-stream responses always had it.
+    routing = getattr(chunk, "routing", None)
+    if routing:
+        data["routing"] = routing.model_dump(exclude_none=True)
     return data
 
 
@@ -100,6 +107,7 @@ async def create_chat_completion(
             tier=api_key.rate_limit_tier,
             model_policy=api_key.model_policy,
             budgets=api_key.budgets,
+            capture_policy=api_key.capture_policy,
         )
     except UnsupportedModalityError as e:
         raise HTTPException(
@@ -184,6 +192,7 @@ async def create_chat_completion_stream(
                     tier=api_key.rate_limit_tier,
                     model_policy=api_key.model_policy,
                     budgets=api_key.budgets,
+                    capture_policy=api_key.capture_policy,
                 ):
                     await queue.put(("chunk", chunk))
             except QuotaExceededError as e:

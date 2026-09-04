@@ -20,7 +20,7 @@ class RoutingMetadata(BaseSchema):
     )
     resolved_model: str = Field(
         ...,
-        description="The actual model used (e.g., 'gemini-3-pro-image-preview')",
+        description="The actual model used (e.g., 'gemini-3-pro-image')",
     )
     resolved_provider: str = Field(
         ...,
@@ -39,7 +39,7 @@ class RoutingMetadata(BaseSchema):
         "json_schema_extra": {
             "example": {
                 "requested_model": "mlpal",
-                "resolved_model": "gemini-3-pro-image-preview",
+                "resolved_model": "gemini-3-pro-image",
                 "resolved_provider": "google",
                 "operation": "image_generation",
                 "strategy": "quality",

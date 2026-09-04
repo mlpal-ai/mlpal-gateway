@@ -1,7 +1,7 @@
 # MLPal Gateway — Master Feature List
 
 One codebase, two deployments. ✅ = present · ⚙️ = present, different default/backing · — = absent by design.
-Updated 2026-08-11.
+Updated 2026-09-04.
 
 ## Inference surfaces
 
@@ -12,6 +12,10 @@ Updated 2026-08-11.
 | `/v1/embeddings`, `/v1/images/generations`, `/v1/audio/speech`, `/v1/audio/transcriptions` | ✅ | ✅ |
 | SSE streaming on both wires (heartbeats, byte-faithful passthrough) | ✅ | ✅ |
 | Tools / structured output / MCP pass-through (gateway, not middleware) | ✅ | ✅ |
+| **Prompt caching on both wires**: Anthropic `cache_control` breakpoints pass through natively on `/v1/messages` and via `cache_control` on OpenAI-wire messages (max 4/request); OpenAI + Gemini implicit caching surfaces as `cached_tokens` (Gemini needs a ≥4096-token prefix) | ✅ | ✅ |
+| `fallback_models` (up to 3, tried on retriable serving failures, billed as-served) + `model_kwargs` (provider-native params, unknown keys rejected) on the OpenAI wire | ✅ | ✅ |
+| `POST /v1/messages/count_tokens` passthrough | ✅ | ✅ |
+| **Async image jobs**: `wait:false` returns a job id, poll `GET /v1/images/jobs/{id}`; image quality tiers (`lite`/standard/`hd`) priced per tier | ✅ | ✅ |
 | `X-MLPal-Compute-Units` header on native responses | ✅ | ✅ |
 | Deprecated `/v2/*` aliases (yodex transition) | ✅ until drained | — (`/v2` reserved) |
 | Bedrock-mantle passthrough at `/mantle/v1/messages` | opt-in flag | — (module not shipped) |
@@ -20,9 +24,11 @@ Updated 2026-08-11.
 
 | Feature | Managed | Self-hosted |
 |---|---|---|
-| Curated registry (77 models: OpenAI, Anthropic, Google, Bedrock open-weights) | ✅ | ✅ same feed |
+| Curated registry (82 models: OpenAI, Anthropic, Google, Bedrock open-weights; deprecations carry a successor + shutdown date) | ✅ | ✅ same feed |
 | Declarative catalog feed + reconcile (insert / update / **soft-retire**, provenance) | manual/CI run | ✅ every boot |
 | Effective-dated pass-through pricing (markup 1.00, 1 CU = $10) | ✅ | ✅ |
+| **Serving backends**: the same model served via first-party API, Bedrock, Vertex, or Azure Foundry in priority order (`MLPAL_<FAMILY>_BACKENDS`); third-party adapters via pip entry point | ✅ | ✅ |
+| **Connections (BYOK / BYOM)**: per-account provider keys and custom OpenAI-compatible endpoints; connection-served requests bill zero CU (tokens still metered) | ✅ | ✅ |
 | Router tags `mlpal` / `mlpal-flash` / `mlpal-lite` — **availability-aware**, feed-driven candidate lists | ✅ | ✅ (single-provider boxes resolve) |
 | Curated catalog API `GET /v1/catalog` (tier ladder, live availability, `no-cache`+ETag) | ✅ | ✅ |
 | Model cards + lineage (console) | ✅ | ✅ |
@@ -41,16 +47,18 @@ Updated 2026-08-11.
 | Spend budgets: **multiple calendar windows** (daily/weekly/monthly/lifetime), `cu`/`usd` at fixed peg, pre-flight enforcement, never cuts a running request, Redis counters re-seeded from `usage_logs`, fail-open | ✅ | ✅ |
 | Rate limiting (Redis, per-tier) | ✅ | ✅ |
 | Identical admission on ALL inference surfaces | ✅ | ✅ |
+| **Per-key payload-capture policy** (`capture: inherit / on / off`) — a key owner opts its own traces in or out of body capture regardless of the box default | ✅ | ✅ |
 
 ## Billing & usage
 
 | Feature | Managed | Self-hosted |
 |---|---|---|
 | Pass-through CU metering (single figure, no markup, no meter) | ✅ | ✅ |
+| **Cache-aware metering reproduces list price exactly**: cache reads at the provider's tier (per-model `cache_read_rate`, e.g. Claude Fable 5.1 $0.25/MTok; else 0.10× OpenAI/Anthropic, 0.25× Gemini), Anthropic cache writes at 1.25× (5m) / 2× (1h); one usage convention on the OpenAI wire (`input_tokens` = whole prompt, `cached_tokens` + `cache_write_tokens` subsets) | ✅ | ✅ |
 | `usage_logs` per request: tokens, CU, latency, status, error, surface tag | ✅ | ✅ |
 | `GET /v1/usage/summary` + daily buckets | ✅ | ✅ |
 | Wallet debits (payments service) + debit-retry worker + billing gate | ✅ | — (local gate: allow-all, no callouts; spend control = per-key budgets) |
-| Tier pricing (Free ≤300M tok/mo · $50 flat · custom) | rollout pending | n/a (self-hosted is free) |
+| Platform fee (free up to 50 CU or 300M tokens/mo per account, cache reads excluded; $100/mo flat beyond) | mechanism shipped, enforcement off | n/a (self-hosted is free) |
 
 ## Observability
 

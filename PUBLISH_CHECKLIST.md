@@ -17,8 +17,9 @@ it public until the boxes below are checked.
 
 ## Verified so far
 
-- ✅ Public package imports with **no env flags** (defaults to self-hosted): 35
-  routes, `/v1/messages` = universal core, **zero `/v2`**.
+- ✅ Public package imports with **no env flags** (defaults to self-hosted): 75
+  routes (2026-09-04 sync), `/v1/messages` = universal core, **zero `/v2`**,
+  zero `/mantle`.
 - ✅ Secret scan clean (RDS/Cognito/account-IDs/provider-keys/`.env` all absent).
 - ✅ `docker compose config` valid (gateway + console); clean-box brought up
   end-to-end previously in the source repo.

@@ -40,9 +40,9 @@ logger = logging.getLogger(__name__)
 
 OPERATION = "chat"  # matches existing ModelPricing rows
 
-# Providers that have a /v2/messages edge (anthropic native passthrough; openai
-# and google via the translating edge). Bedrock has no edge yet.
-SERVED_PROVIDERS = frozenset({"anthropic", "openai", "google"})
+# Providers that have a /v2/messages edge: anthropic native passthrough;
+# openai, google, and bedrock (open-weight lineup) via the translating edge.
+SERVED_PROVIDERS = frozenset({"anthropic", "openai", "google", "bedrock"})
 
 # Sentinel: an allowlist of ["*"] admits any served chat model (GA default),
 # instead of an explicit per-tag pin list.
@@ -150,9 +150,12 @@ class MessagesV2Core:
             if backend is not None and backend.serves(model.provider_model_id):
                 return AnthropicEdge(backend)
             return self._translating_edge(provider, model.provider_model_id)
-        if provider in ("openai", "google"):
-            # Same translating edge for both: Anthropic surface ↔ OpenAI-common
-            # ↔ provider adapter ↔ Anthropic wire (see translating_edge.py).
+        if provider in ("openai", "google", "bedrock"):
+            # Same translating edge for all three: Anthropic surface ↔
+            # OpenAI-common ↔ provider adapter ↔ Anthropic wire (see
+            # translating_edge.py). For bedrock this serves the open-weight
+            # catalog (Converse API) — the factory resolves the serving
+            # backend exactly as on the OpenAI wire.
             return self._translating_edge(provider, model.provider_model_id)
         raise ModelNotAllowed(f"provider '{provider}' not yet served by /v2/messages")
 
@@ -343,11 +346,18 @@ class MessagesV2Core:
 
         result = await edge.invoke(req, ctx)
         compute_units = await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
-        # Opt-in payload capture — a task spawn only; enabled-check + zlib all
-        # happen inside the task (see services/capture.py).
-        _spawn(
-            _capture_v2(ctx.trace_id, req.body, result.body, getattr(self._usage, "redis", None))
-        )
+        # Opt-in payload capture — hard-off keys skip even the task spawn;
+        # enabled-check + key resolution + zlib all happen inside the task.
+        if _key_capture_possible(ctx):
+            _spawn(
+                _capture_v2(
+                    ctx.trace_id, req.body, result.body,
+                    getattr(self._usage, "redis", None),
+                    capture_policy=_key_capture_policy(ctx),
+                    requested_model=req.model,
+                    resolved_model=ctx.model_tag,
+                )
+            )
         # Surface CU on the Anthropic-wire response via headers (the body stays a
         # faithful Anthropic Messages object). Streaming can't do this — headers
         # are sent before the CU is known — so streamed requests are billing-only.
@@ -503,12 +513,16 @@ class MessagesV2Core:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
-            _spawn(
-                _capture_v2(
-                    ctx.trace_id, req.body, bytes(capture_buf),
-                    getattr(self._usage, "redis", None),
+            if _key_capture_possible(ctx):
+                _spawn(
+                    _capture_v2(
+                        ctx.trace_id, req.body, bytes(capture_buf),
+                        getattr(self._usage, "redis", None),
+                        capture_policy=_key_capture_policy(ctx),
+                        requested_model=req.model,
+                        resolved_model=ctx.model_tag,
+                    )
                 )
-            )
 
     def _flag_conn_rejected(self, ctx: RequestContext) -> None:
         if ctx.conn_id is None:
@@ -549,7 +563,16 @@ class MessagesV2Core:
             if rates is None:
                 logger.warning(f"[v2.messages] no pricing for {ctx.model_tag}; CU=0 trace={ctx.trace_id}")
             else:
-                compute_units = ctx.usage.compute_units(*rates)
+                in_cu, out_cu, cache_cu = rates
+                if cache_cu is None:
+                    # No per-model cache-read list price: the provider's
+                    # standard multiple applies (google 0.25x, else 0.10x).
+                    from mlpal_assistants_service.services.pricing import (
+                        provider_cache_read_multiplier,
+                    )
+
+                    cache_cu = in_cu * provider_cache_read_multiplier(ctx.provider)
+                compute_units = ctx.usage.compute_units(in_cu, out_cu, cache_cu)
 
         logger.info(
             f"[v2.messages] trace={ctx.trace_id} model={ctx.model_tag} provider={ctx.provider} "
@@ -655,7 +678,9 @@ class MessagesV2Core:
             return Decimal("0")
         return compute_units
 
-    async def _resolve_cu_rates(self, model_tag: str) -> tuple[Decimal, Decimal] | None:
+    async def _resolve_cu_rates(
+        self, model_tag: str
+    ) -> tuple[Decimal, Decimal, Decimal | None] | None:
         """Per-token CU rates at PASS-THROUGH: the stored cu_rates include the
         row's legacy markup_multiplier (generated columns), so divide the row's
         own markup back out — the same source of truth the v1 chat path uses
@@ -668,9 +693,18 @@ class MessagesV2Core:
             return None
         divisor = Decimal("1000") if pricing.rate_unit == "per_1k_tokens" else Decimal("1000000")
         markup = pricing.markup_multiplier or Decimal("1")
+        # Per-model cache-read rate (list $/unit → CU/token, no markup — it is
+        # stored as the raw list price). None = global multiplier applies.
+        cache_read = getattr(pricing, "cache_read_rate", None)
+        cache_read_cu = (
+            cache_read / divisor / (pricing.cu_to_dollar or Decimal("10"))
+            if cache_read is not None
+            else None
+        )
         return (
             pricing.input_cu_rate / divisor / markup,
             pricing.output_cu_rate / divisor / markup,
+            cache_read_cu,
         )
 
     async def _post_billing(self, ctx: RequestContext, compute_units: Decimal, total_tokens: int) -> None:
@@ -724,15 +758,40 @@ class MessagesV2Core:
             )
 
 
+def _key_capture_policy(ctx: RequestContext) -> dict | None:
+    return getattr(ctx.api_key, "capture_policy", None)
+
+
+def _key_capture_possible(ctx: RequestContext) -> bool:
+    """Pre-spawn short-circuit: a hard {"mode": "off"} key pays nothing,
+    not even the capture task spawn."""
+    policy = _key_capture_policy(ctx)
+    return not (isinstance(policy, dict) and policy.get("mode") == "off")
+
+
 async def _capture_v2(
-    trace_id: str, request_body: Any, response_body: bytes | str, redis: Any
+    trace_id: str,
+    request_body: Any,
+    response_body: bytes | str,
+    redis: Any,
+    capture_policy: dict | None = None,
+    requested_model: str | None = None,
+    resolved_model: str | None = None,
 ) -> None:
-    """Background capture for the universal messages core (non-streaming)."""
+    """Background capture for the universal messages core."""
     try:
-        from mlpal_assistants_service.services.capture import capture_payload, capture_state
+        from mlpal_assistants_service.services.capture import (
+            capture_payload,
+            capture_state,
+            key_allows_capture,
+        )
 
         cfg = await capture_state.config(redis)
         if not cfg.enabled:
+            return
+        if not key_allows_capture(
+            capture_policy, cfg.key_default, requested_model, resolved_model
+        ):
             return
         body = (
             response_body.decode("utf-8", "replace")

@@ -33,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mlpal_assistants_service.adapters import (
     CircuitBreakerOpen,
 )
+from mlpal_assistants_service.adapters.base import TokenUsage as AdapterTokenUsage
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
     ModelNotFoundError,
@@ -53,7 +54,11 @@ from mlpal_assistants_service.schemas.chat import (
     ToolCallSchema,
 )
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
-from mlpal_assistants_service.services.capture import capture_payload, capture_state
+from mlpal_assistants_service.services.capture import (
+    capture_payload,
+    capture_state,
+    key_allows_capture,
+)
 from mlpal_assistants_service.services.policy import PolicyService
 from mlpal_assistants_service.services.pricing import PricingService
 from mlpal_assistants_service.services.rate_limiter import RateLimiter
@@ -85,6 +90,24 @@ class _ByomModelInfo:
         self.model_tag = model_tag
         self.provider = provider
         self.provider_model_id = provider_model_id
+
+
+def _wire_token_usage(usage: AdapterTokenUsage, cached_included: bool) -> TokenUsage:
+    """Adapter usage → the wire's TokenUsage, with ONE convention for every
+    provider: input_tokens is the whole prompt and cached_tokens /
+    cache_write_tokens are subsets of it (OpenAI semantics). Anthropic
+    reports only the uncached remainder as input_tokens, so it is summed back."""
+    writes = usage.cache_write_5m_tokens + usage.cache_write_1h_tokens
+    prompt = usage.input_tokens
+    if not cached_included:
+        prompt += usage.cached_tokens + writes
+    return TokenUsage(
+        input_tokens=prompt,
+        output_tokens=usage.output_tokens,
+        total_tokens=prompt + usage.output_tokens,
+        cached_tokens=usage.cached_tokens,
+        cache_write_tokens=writes,
+    )
 
 
 class ChatService:
@@ -163,6 +186,7 @@ class ChatService:
         compute_units: Decimal,
         latency_ms: int,
         billing_needs_ensure: bool,
+        cache_read_tokens: int = 0,
         sqs_client: Any | None = None,
         budgets: list | None = None,
         serving_backend: str | None = None,
@@ -206,6 +230,13 @@ class ChatService:
                     cc_metadata=(
                         {
                             **({"serving_backend": serving_backend} if serving_backend else {}),
+                            # Free-tier accrual subtracts cache reads by this key
+                            # (input_tokens is the full prompt incl. cached).
+                            **(
+                                {"cache_read_input_tokens": cache_read_tokens}
+                                if cache_read_tokens
+                                else {}
+                            ),
                             **(
                                 {
                                     "serving_credentials": conn_kind,
@@ -307,6 +338,7 @@ class ChatService:
         tier: str = "standard",
         model_policy: dict | None = None,
         budgets: list | None = None,
+        capture_policy: dict | None = None,
     ) -> ChatCompletionResponse:
         """Chat with client-controlled model failover: candidates are tried in
         order, each passing the FULL pipeline (policy, capability, billing) —
@@ -318,7 +350,8 @@ class ChatService:
             req = request if i == 0 else request.model_copy(update={"model": tag})
             try:
                 response = await self._chat_once(
-                    user_id, api_key_id, req, tier, model_policy, budgets
+                    user_id, api_key_id, req, tier, model_policy, budgets,
+                    capture_policy=capture_policy,
                 )
             except Exception as e:  # noqa: BLE001 — classified by _retriable
                 if i < len(candidates) - 1 and self._retriable(e):
@@ -342,6 +375,7 @@ class ChatService:
         tier: str = "standard",
         model_policy: dict | None = None,
         budgets: list | None = None,
+        capture_policy: dict | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Streaming with model failover: a candidate is abandoned only while
         NOTHING has been emitted yet — once the first chunk is on the wire the
@@ -352,7 +386,8 @@ class ChatService:
             emitted = False
             try:
                 async for chunk in self._chat_stream_once(
-                    user_id, api_key_id, req, tier, model_policy, budgets
+                    user_id, api_key_id, req, tier, model_policy, budgets,
+                    capture_policy=capture_policy,
                 ):
                     emitted = True
                     yield chunk
@@ -374,6 +409,7 @@ class ChatService:
         tier: str = "standard",
         model_policy: dict | None = None,
         budgets: list | None = None,
+        capture_policy: dict | None = None,
     ) -> ChatCompletionResponse:
         """
         Execute a chat completion request.
@@ -579,7 +615,13 @@ class ChatService:
                     model_tag=resolved_model_tag,
                     input_units=response.usage.input_tokens,
                     output_units=response.usage.output_tokens,
+                    cached_units=response.usage.cached_tokens,
+                    cached_included=adapter.cached_tokens_included_in_input,
+                    provider=model_info.provider,
+                    cache_write_5m_units=response.usage.cache_write_5m_tokens,
+                    cache_write_1h_units=response.usage.cache_write_1h_tokens,
                 )
+            wire_usage = _wire_token_usage(response.usage, adapter.cached_tokens_included_in_input)
             # The caller-facing cost is the BILLED truth: zero when served on
             # the user's own connection (compute_units keeps the list-price
             # value for the metadata estimate + usage-row zeroing downstream).
@@ -593,8 +635,9 @@ class ChatService:
                     trace_id=trace_id,
                     resolved_model_tag=resolved_model_tag,
                     provider=model_info.provider,
-                    input_tokens=response.usage.input_tokens,
-                    output_tokens=response.usage.output_tokens,
+                    input_tokens=wire_usage.input_tokens,
+                    output_tokens=wire_usage.output_tokens,
+                    cache_read_tokens=wire_usage.cached_tokens,
                     compute_units=compute_units,
                     latency_ms=latency_ms,
                     billing_needs_ensure=not billing_existed,
@@ -632,11 +675,7 @@ class ChatService:
                 cost=CostInfo(
                     model_name=resolved_model_tag,
                     provider=model_info.provider,
-                    tokens=TokenUsage(
-                        input_tokens=response.usage.input_tokens,
-                        output_tokens=response.usage.output_tokens,
-                        total_tokens=response.usage.total_tokens,
-                    ),
+                    tokens=wire_usage,
                     latency_ms=latency_ms,
                     compute_units=float(billed_cu),
                 ),
@@ -656,7 +695,12 @@ class ChatService:
             )
             # Opt-in payload capture — a task spawn; the enabled check and all
             # serialization happen inside the background task.
-            self._maybe_capture(trace_id, request, chat_response)
+            self._maybe_capture(
+                trace_id, request, chat_response,
+                capture_policy=capture_policy,
+                requested_model=request.model,
+                resolved_model=resolved_model_tag,
+            )
             return chat_response
 
         except CircuitBreakerOpen as e:
@@ -731,6 +775,7 @@ class ChatService:
         tier: str = "standard",
         model_policy: dict | None = None,
         budgets: list | None = None,
+        capture_policy: dict | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """
         Execute a streaming chat completion request.
@@ -931,7 +976,15 @@ class ChatService:
                                     model_tag=resolved_model_tag,
                                     input_units=final_usage.input_tokens,
                                     output_units=final_usage.output_tokens,
+                                    cached_units=final_usage.cached_tokens,
+                                    cached_included=adapter.cached_tokens_included_in_input,
+                                    provider=model_info.provider,
+                                    cache_write_5m_units=final_usage.cache_write_5m_tokens,
+                                    cache_write_1h_units=final_usage.cache_write_1h_tokens,
                                 )
+                            wire_usage = _wire_token_usage(
+                                final_usage, adapter.cached_tokens_included_in_input
+                            )
                             billed_cu = (
                                 Decimal("0") if conn is not None else compute_units
                             )
@@ -944,8 +997,9 @@ class ChatService:
                                     trace_id=trace_id,
                                     resolved_model_tag=resolved_model_tag,
                                     provider=model_info.provider,
-                                    input_tokens=final_usage.input_tokens,
-                                    output_tokens=final_usage.output_tokens,
+                                    input_tokens=wire_usage.input_tokens,
+                                    output_tokens=wire_usage.output_tokens,
+                                    cache_read_tokens=wire_usage.cached_tokens,
                                     compute_units=compute_units,
                                     latency_ms=latency_ms,
                                     billing_needs_ensure=not billing_existed,
@@ -969,11 +1023,7 @@ class ChatService:
                                 cost=CostInfo(
                                     model_name=resolved_model_tag,
                                     provider=model_info.provider,
-                                    tokens=TokenUsage(
-                                        input_tokens=final_usage.input_tokens,
-                                        output_tokens=final_usage.output_tokens,
-                                        total_tokens=final_usage.total_tokens,
-                                    ),
+                                    tokens=wire_usage,
                                     latency_ms=latency_ms,
                                     compute_units=float(billed_cu),
                                 ),
@@ -988,6 +1038,9 @@ class ChatService:
                                     "finish_reason": chunk.finish_reason,
                                     "streamed": True,
                                 },
+                                capture_policy=capture_policy,
+                                requested_model=request.model,
+                                resolved_model=resolved_model_tag,
                             )
                         else:
                             yield StreamChunk(
@@ -1148,6 +1201,8 @@ class ChatService:
                 "role": msg.role,
                 "content": msg.content,
             }
+            if msg.cache_control is not None:
+                converted["cache_control"] = msg.cache_control.model_dump(exclude_none=True)
             if msg.files:
                 converted["files"] = [
                     {
@@ -1236,16 +1291,32 @@ class ChatService:
         except Exception as e:
             logger.warning(f"Failed to record error usage: {e}")
 
-    def _maybe_capture(self, trace_id: str, request_body: Any, response_body: Any) -> None:
+    def _maybe_capture(
+        self,
+        trace_id: str,
+        request_body: Any,
+        response_body: Any,
+        capture_policy: dict | None = None,
+        requested_model: str | None = None,
+        resolved_model: str | None = None,
+    ) -> None:
         """Schedule opt-in payload capture — entirely off the request path.
 
-        The enabled check itself happens inside the task (10s-cached), so a
-        disabled capture costs one task spawn and nothing else."""
+        Per-key control: an explicit {"mode": "off"} policy short-circuits
+        HERE, before the task spawn — the hard-off key pays nothing at all.
+        The subsystem-enabled check and the full key resolution (deployment
+        key_default, models filter) run inside the task (10s-cached config)."""
+        if isinstance(capture_policy, dict) and capture_policy.get("mode") == "off":
+            return
 
         async def _run() -> None:
             try:
                 cfg = await capture_state.config(self.redis)
                 if not cfg.enabled:
+                    return
+                if not key_allows_capture(
+                    capture_policy, cfg.key_default, requested_model, resolved_model
+                ):
                     return
                 body = (
                     request_body.model_dump(exclude_none=True)

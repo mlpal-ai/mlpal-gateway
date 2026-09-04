@@ -39,9 +39,9 @@ extra configuration.
 Don't want to run infrastructure? The managed deployment of this same codebase
 runs at **[mlpal.ai](https://mlpal.ai)** — create a key and point the same
 SDK/CLI at `https://models.mlpal.ai` instead of localhost. Pricing is simple:
-**routing is free for your first 300M tokens each month**, then **$50 flat per
-month up to 5B tokens**; your tokens are always billed at provider list price,
-passed through with no markup, either way.
+**routing is free up to 50 CU or 300M tokens each month** (cache reads don't
+count), then **$100 flat per month**; your tokens are always billed at provider
+list price, passed through with no markup, either way.
 
 Prebuilt multi-arch images are on GHCR if you'd rather not build from source:
 `ghcr.io/mlpal-ai/mlpal-gateway` and `ghcr.io/mlpal-ai/mlpal-gateway-console`
@@ -92,8 +92,8 @@ print(msg.text, msg.compute_units)
 - **Observability.** Per-key cache hit rate, latency p50/p95,
   time-to-first-token, request traces, and optional payload capture
   (zlib-compressed, runtime toggle — your box, your data).
-- **Provider semantics preserved.** Prompt caching (`cache_control`), tools,
-  structured output, and MCP config pass through untouched.
+- **Provider semantics preserved.** Prompt caching (`cache_control`, on both
+  wires), tools, structured output, and MCP config pass through untouched.
 - **Serve through the cloud you already have.** The same models can be served
   via Azure AI Foundry, Vertex AI, or AWS Bedrock instead of (or in priority
   order with) the provider's own API — `MLPAL_ANTHROPIC_BACKENDS=bedrock,first_party`

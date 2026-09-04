@@ -112,7 +112,7 @@ async def test_connection_served_never_debits_wallet(monkeypatch):
     )
     monkeypatch.setattr(
         core, "_resolve_cu_rates",
-        AsyncMock(return_value=(Decimal("0.001"), Decimal("0.002"))),
+        AsyncMock(return_value=(Decimal("0.001"), Decimal("0.002"), None)),
     )
 
     ctx = RequestContext(

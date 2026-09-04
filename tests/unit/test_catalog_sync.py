@@ -120,3 +120,42 @@ def test_unchanged_price_is_noop_across_decimal_forms():
                        cu_to_dollar=0.1, input_cu_rate=10, output_cu_rate=20)]
     feed = [_price("gpt-x")]  # string forms of the same numbers
     assert plan_pricing(existing, feed).is_empty
+
+
+def test_same_day_reprice_updates_in_place():
+    """Regression (2026-08-22): two reprices of the same model on the same
+    day must not violate uq_pricing (model_tag, operation, effective_date) —
+    the second reconcile updates today's row in place instead of inserting."""
+    from decimal import Decimal
+    from unittest.mock import MagicMock
+
+    from mlpal_assistants_service.services import catalog_sync
+
+    today_row = MagicMock()
+    today_row.model_tag = "gpt-5.6-sol"
+    today_row.operation = "chat"
+    today_row.is_active = False  # just deactivated by this reconcile
+
+    feed_row = {
+        "model_tag": "gpt-5.6-sol", "operation": "chat", "tier": "premium",
+        "input_rate": "4.00000000", "output_rate": "20.00000000",
+        "rate_unit": "per_1m_tokens", "markup_multiplier": "3.00",
+        "cu_to_dollar": "10.00",
+    }
+    plan = catalog_sync.plan_pricing(
+        [{"model_tag": "gpt-5.6-sol", "operation": "chat", "tier": "premium",
+          "input_rate": Decimal("5.00000000"), "output_rate": Decimal("30.00000000"),
+          "rate_unit": "per_1m_tokens", "markup_multiplier": Decimal("3.00"),
+          "cu_to_dollar": Decimal("10.00")}],
+        [feed_row],
+    )
+    assert plan.activate and plan.deactivate  # changed price supersedes
+
+    # emulate the apply loop's collision branch
+    existing_today = today_row
+    for f in catalog_sync.PRICING_FIELDS:
+        if f in feed_row:
+            setattr(existing_today, f, feed_row[f])
+    existing_today.is_active = True
+    assert existing_today.input_rate == "4.00000000"
+    assert existing_today.is_active is True

@@ -155,12 +155,13 @@ async def test_streaming_byte_faithful_and_cache_usage(monkeypatch):
 async def test_non_served_model_returns_anthropic_error(monkeypatch):
     # Under the wildcard allowlist, a resolvable model on an edgeless provider
     # (or a non-chat operation) is still rejected with the Anthropic envelope.
+    # (bedrock gained its edge — "mistral" stands in as the edgeless provider.)
     core, usage, _ = _core()
     core._router.get_model = AsyncMock(return_value=SimpleNamespace(
-        provider="bedrock", provider_model_id="anthropic.claude", model_tag="bedrock-claude",
+        provider="mistral", provider_model_id="mistral-large", model_tag="mistral-large",
         display_name="x", capabilities={"operation": "chat"}, max_output_tokens=4096,
     ))
-    req = validate(json.dumps({"model": "bedrock-claude", "messages": [{"role": "user", "content": "hi"}]}).encode())
+    req = validate(json.dumps({"model": "mistral-large", "messages": [{"role": "user", "content": "hi"}]}).encode())
     resp = await core.handle(req, _api_key(), {}, "trace-3")
     assert resp.status_code == 404
     err = json.loads(resp.body)
@@ -384,9 +385,10 @@ async def test_streaming_spawns_capture_with_accumulated_sse(monkeypatch):
 
     captured = {}
 
-    async def fake_capture(trace_id, request_body, response_body, redis):
+    async def fake_capture(trace_id, request_body, response_body, redis, **kw):
         captured["trace_id"] = trace_id
         captured["response"] = response_body
+        captured["kw"] = kw
 
     monkeypatch.setattr(core_mod, "_capture_v2", fake_capture)
     _mock_backend(monkeypatch, STREAM_SSE, content_type="text/event-stream", streaming=True)

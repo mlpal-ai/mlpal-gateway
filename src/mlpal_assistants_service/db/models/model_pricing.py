@@ -68,6 +68,15 @@ class ModelPricing(Base, TimestampMixin):
         nullable=False,
     )
 
+    # Per-model cache-read list price (same unit as input_rate). NULL = the
+    # provider prices cache reads at the standard multiple of input
+    # (settings.cache_read_multiplier, 0.10x); set only when a model breaks
+    # the rule — e.g. claude-fable-5-1 at $0.25/MTok (0.025x of input).
+    cache_read_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 8),
+        nullable=True,
+    )
+
     # Rate unit description
     rate_unit: Mapped[str] = mapped_column(
         String(50),

@@ -38,6 +38,14 @@ from mlpal_assistants_service.core.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+def _append_system_text(system: str | list | None, text: str) -> str | list:
+    """Append instruction text to a system prompt that may be a string or a
+    block list (block lists appear when a cache_control breakpoint is set)."""
+    if isinstance(system, list):
+        return [*system, {"type": "text", "text": text}]
+    return (system or "") + text
+
+
 class AnthropicAdapter(BaseAdapter):
     # Messages-API params we forward via model_kwargs.
     SUPPORTED_KWARGS = frozenset({"top_k", "metadata", "service_tier", "thinking"})
@@ -58,6 +66,9 @@ class AnthropicAdapter(BaseAdapter):
     - claude-sonnet-4-5-20250929 (balanced)
     - claude-haiku-4-5-20251001 (fast)
     """
+
+    # Anthropic-style usage: input_tokens EXCLUDES cache reads (see BaseAdapter).
+    cached_tokens_included_in_input = False
 
     provider_name = "anthropic"
 
@@ -401,7 +412,9 @@ class AnthropicAdapter(BaseAdapter):
                     # For json_object, prepend instruction to system message
                     sys_msgs = [m for m in params.get("messages", []) if m.get("role") == "system"]
                     if not sys_msgs:
-                        params["system"] = params.get("system", "") + "\nYou must respond with valid JSON only."
+                        params["system"] = _append_system_text(
+                            params.get("system"), "\nYou must respond with valid JSON only."
+                        )
 
             # Add MCP servers if provided — requires beta API
             use_beta = False
@@ -447,11 +460,7 @@ class AnthropicAdapter(BaseAdapter):
                     if block.type == "tool_use" and block.name == _structured_tool_name:
                         # Replace content with the structured JSON
                         latency_ms = int((time.perf_counter() - start_time) * 1000)
-                        usage = TokenUsage(
-                            input_tokens=response.usage.input_tokens,
-                            output_tokens=response.usage.output_tokens,
-                            cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
-                        )
+                        usage = self._token_usage(response.usage)
                         return AdapterResponse(
                             content=json.dumps(block.input),
                             model=response.model,
@@ -485,11 +494,7 @@ class AnthropicAdapter(BaseAdapter):
                     })
 
             # Build token usage
-            usage = TokenUsage(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cached_tokens=getattr(response.usage, "cache_read_input_tokens", 0),
-            )
+            usage = self._token_usage(response.usage)
 
             return AdapterResponse(
                 content=content,
@@ -589,7 +594,9 @@ class AnthropicAdapter(BaseAdapter):
                 elif fmt_type == "json_object":
                     sys_msgs = [m for m in params.get("messages", []) if m.get("role") == "system"]
                     if not sys_msgs:
-                        params["system"] = params.get("system", "") + "\nYou must respond with valid JSON only."
+                        params["system"] = _append_system_text(
+                            params.get("system"), "\nYou must respond with valid JSON only."
+                        )
 
             # Add MCP servers if provided — requires beta API
             use_beta = False
@@ -671,10 +678,7 @@ class AnthropicAdapter(BaseAdapter):
                         yield StreamChunk(
                             content="",
                             done=True,
-                            usage=TokenUsage(
-                                input_tokens=final_message.usage.input_tokens,
-                                output_tokens=final_message.usage.output_tokens,
-                            ),
+                            usage=self._token_usage(final_message.usage),
                             finish_reason=self._map_stop_reason(final_message.stop_reason),
                         )
 
@@ -696,7 +700,7 @@ class AnthropicAdapter(BaseAdapter):
     def _normalize_messages(
         self,
         messages: list[dict[str, Any]],
-    ) -> tuple[str | None, list[dict[str, Any]]]:
+    ) -> tuple[str | list[dict[str, Any]] | None, list[dict[str, Any]]]:
         """
         Convert messages to Anthropic format.
 
@@ -714,97 +718,138 @@ class AnthropicAdapter(BaseAdapter):
         - FileAttachment objects in the `files` key
         - Legacy dict format with `images`/`documents` keys
         """
-        system_message = None
+        system_blocks: list[dict[str, Any]] = []
         normalized = []
 
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content", "")
 
-            # Extract system message
+            # Extract system message. With a cache_control breakpoint the system
+            # prompt becomes a block list so the marker lands on the block
+            # (Anthropic caches prefixes, and system is the first prefix).
             if role == "system":
-                if system_message:
-                    system_message += "\n\n" + str(content)
-                else:
-                    system_message = str(content)
+                block = {"type": "text", "text": str(content)}
+                if msg.get("cache_control"):
+                    block["cache_control"] = msg["cache_control"]
+                system_blocks.append(block)
                 continue
 
-            # Handle tool calls in assistant messages
-            if role == "assistant" and msg.get("tool_calls"):
-                content_blocks = []
-                if content:
-                    content_blocks.append({"type": "text", "text": str(content)})
+            normalized.append(self._normalize_turn(role, content, msg))
+            if msg.get("cache_control"):
+                self._mark_cache_breakpoint(normalized[-1], msg["cache_control"])
 
-                for tc in msg["tool_calls"]:
-                    # Parse arguments if they're a string
-                    args = tc["function"]["arguments"]
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            args = {"raw": args}
-
-                    content_blocks.append({
-                        "type": "tool_use",
-                        "id": tc["id"],
-                        "name": tc["function"]["name"],
-                        "input": args,
-                    })
-
-                normalized.append({
-                    "role": "assistant",
-                    "content": content_blocks,
-                })
-                continue
-
-            # Handle tool results
-            if role == "tool":
-                normalized.append({
-                    "role": "user",
-                    "content": [{
-                        "type": "tool_result",
-                        "tool_use_id": msg.get("tool_call_id"),
-                        "content": str(content),
-                    }],
-                })
-                continue
-
-            # Handle files/images/documents in content
-            files = msg.get("files", [])
-            images = msg.get("images", [])
-            documents = msg.get("documents", [])
-
-            if files or images or documents:
-                # Build multimodal content
-                content_parts: list[dict[str, Any]] = []
-
-                # Add text first (Anthropic prefers text before images)
-                if content:
-                    content_parts.append({"type": "text", "text": str(content)})
-
-                # Process files (supports both FileAttachment and dict)
-                for f in files:
-                    content_part = self._process_file_attachment(f)
-                    if content_part:
-                        content_parts.append(content_part)
-
-                # Add images directly (legacy format)
-                for img in images:
-                    content_parts.append(self._build_image_content(img))
-
-                # Add documents directly (legacy format)
-                for doc in documents:
-                    content_parts.append(self._build_document_content(doc))
-
-                normalized.append({"role": role, "content": content_parts})
-            else:
-                # Check if content is already multimodal format
-                if isinstance(content, list):
-                    normalized.append({"role": role, "content": content})
-                else:
-                    normalized.append({"role": role, "content": str(content)})
-
+        # A plain string system prompt keeps the historical wire shape (and
+        # byte-identical requests); blocks only when a breakpoint needs one.
+        if not system_blocks:
+            system_message = None
+        elif any("cache_control" in b for b in system_blocks):
+            system_message = system_blocks
+        else:
+            system_message = "\n\n".join(b["text"] for b in system_blocks)
         return system_message, normalized
+
+    @staticmethod
+    def _token_usage(usage: Any) -> TokenUsage:
+        """Anthropic usage → TokenUsage. input_tokens EXCLUDES cache reads and
+        writes on this wire; both are surfaced separately so billing can
+        price each tier (reads per-model/0.10x, writes 1.25x/2x)."""
+        creation = getattr(usage, "cache_creation", None)
+        write_5m = (getattr(creation, "ephemeral_5m_input_tokens", 0) or 0) if creation else 0
+        write_1h = (getattr(creation, "ephemeral_1h_input_tokens", 0) or 0) if creation else 0
+        if not creation:
+            # Older usage shape: a single untiered total (5m is the default TTL).
+            write_5m = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        return TokenUsage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cached_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
+            cache_write_5m_tokens=write_5m,
+            cache_write_1h_tokens=write_1h,
+        )
+
+    def _normalize_turn(
+        self, role: str, content: Any, msg: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Convert one non-system message to an Anthropic message dict."""
+        # Handle tool calls in assistant messages
+        if role == "assistant" and msg.get("tool_calls"):
+            content_blocks = []
+            if content:
+                content_blocks.append({"type": "text", "text": str(content)})
+
+            for tc in msg["tool_calls"]:
+                # Parse arguments if they're a string
+                args = tc["function"]["arguments"]
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        args = {"raw": args}
+
+                content_blocks.append({
+                    "type": "tool_use",
+                    "id": tc["id"],
+                    "name": tc["function"]["name"],
+                    "input": args,
+                })
+
+            return {"role": "assistant", "content": content_blocks}
+
+        # Handle tool results
+        if role == "tool":
+            return {
+                "role": "user",
+                "content": [{
+                    "type": "tool_result",
+                    "tool_use_id": msg.get("tool_call_id"),
+                    "content": str(content),
+                }],
+            }
+
+        # Handle files/images/documents in content
+        files = msg.get("files", [])
+        images = msg.get("images", [])
+        documents = msg.get("documents", [])
+
+        if files or images or documents:
+            # Build multimodal content
+            content_parts: list[dict[str, Any]] = []
+
+            # Add text first (Anthropic prefers text before images)
+            if content:
+                content_parts.append({"type": "text", "text": str(content)})
+
+            # Process files (supports both FileAttachment and dict)
+            for f in files:
+                content_part = self._process_file_attachment(f)
+                if content_part:
+                    content_parts.append(content_part)
+
+            # Add images directly (legacy format)
+            for img in images:
+                content_parts.append(self._build_image_content(img))
+
+            # Add documents directly (legacy format)
+            for doc in documents:
+                content_parts.append(self._build_document_content(doc))
+
+            return {"role": role, "content": content_parts}
+
+        # Check if content is already multimodal format
+        if isinstance(content, list):
+            return {"role": role, "content": content}
+        return {"role": role, "content": str(content)}
+
+    @staticmethod
+    def _mark_cache_breakpoint(message: dict[str, Any], cache_control: dict) -> None:
+        """Put the breakpoint on the LAST content block of a normalized
+        message — the prefix up to and including it is what gets cached."""
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = [{"type": "text", "text": content, "cache_control": cache_control}]
+        elif isinstance(content, list) and content:
+            content[-1] = {**content[-1], "cache_control": cache_control}
 
     def _process_file_attachment(
         self,
@@ -1130,18 +1175,16 @@ class AnthropicAdapter(BaseAdapter):
         NOT SUPPORTED: Anthropic does not provide image generation.
 
         Alternatives:
-        - OpenAI DALL-E 3 (dall-e-3) - High quality text-to-image
-        - OpenAI GPT-Image-1 (gpt-image-1) - Image-to-image support
-        - Google Gemini 3 Pro Image (gemini-3-pro-image-preview) - Native generation
-        - Stability AI (via Bedrock) - Fine control over generation
+        - OpenAI gpt-image-2 - Flagship, arbitrary resolutions, editing
+        - Google gemini-3-pro-image - Highest quality, 4K, 14 reference images
+        - Google gemini-3.1-flash-image - Fast native generation
         """
         raise NotImplementedError(
             "Anthropic does not support image generation. "
             "Recommended alternatives:\n"
-            "  - OpenAI: dall-e-3 (high quality, text-to-image)\n"
-            "  - OpenAI: gpt-image-1 (supports image-to-image)\n"
-            "  - Google: gemini-3-pro-image-preview (native generation)\n"
-            "  - Bedrock: stability.stable-image-ultra-v1:0 (Stability AI)"
+            "  - OpenAI: gpt-image-2 (flagship, arbitrary resolutions, editing)\n"
+            "  - Google: gemini-3-pro-image (highest quality, up to 4K)\n"
+            "  - Google: gemini-3.1-flash-image (fast)"
         )
 
     async def transcribe(

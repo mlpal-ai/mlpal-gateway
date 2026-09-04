@@ -61,6 +61,9 @@ class BedrockAdapter(BaseAdapter):
     - Claude (via Bedrock): anthropic.claude-3-5-sonnet-20241022-v2:0
     """
 
+    # Anthropic-style usage: input_tokens EXCLUDES cache reads (see BaseAdapter).
+    cached_tokens_included_in_input = False
+
     provider_name = "bedrock"
 
     # Model capabilities registry
@@ -603,6 +606,7 @@ class BedrockAdapter(BaseAdapter):
 
                 total_input_tokens = 0
                 total_output_tokens = 0
+                stop_reason: str | None = None
                 pending_tool_calls: list[dict[str, Any]] = []
                 current_tool_use: dict[str, Any] | None = None
                 current_tool_input = ""
@@ -641,7 +645,7 @@ class BedrockAdapter(BaseAdapter):
 
                     # Handle message stop with usage
                     elif "messageStop" in event:
-                        pass  # Stop reason handled at end
+                        stop_reason = event["messageStop"].get("stopReason")
 
                     # Handle metadata with usage
                     elif "metadata" in event:
@@ -657,7 +661,9 @@ class BedrockAdapter(BaseAdapter):
                         tool_calls=pending_tool_calls,
                     )
 
-                # Final chunk
+                # Final chunk. Mapping the real stopReason matters on the
+                # Anthropic wire: "length" becomes stop_reason=max_tokens and
+                # feeds empty-completion detection.
                 yield StreamChunk(
                     content="",
                     done=True,
@@ -665,7 +671,7 @@ class BedrockAdapter(BaseAdapter):
                         input_tokens=total_input_tokens,
                         output_tokens=total_output_tokens,
                     ),
-                    finish_reason="stop",
+                    finish_reason=self._map_stop_reason(stop_reason),
                 )
 
         except (UnsupportedModalityError, UnsupportedCapabilityError):

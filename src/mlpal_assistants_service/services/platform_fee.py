@@ -24,7 +24,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import Numeric, func, select
 from sqlalchemy.exc import IntegrityError
 
 from mlpal_assistants_service.core.config import get_settings
@@ -143,10 +143,22 @@ async def _db_month_tokens(session: Any, user_id: int) -> int:
     tz = ZoneInfo(getattr(settings, "budget_timezone", "UTC") or "UTC")
     now = datetime.now(tz)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    # Mirror the accrual path: cache READS are excluded from the free-tier
+    # count (input_tokens includes the cached portion; the read count lives in
+    # cc_metadata). Rows without the field predate caching metadata — 0.
+    cache_read = func.cast(
+        func.coalesce(UsageLog.cc_metadata["cache_read_input_tokens"].as_string(), "0"),
+        Numeric,
+    )
     total = (
         await session.execute(
             select(
-                func.coalesce(func.sum(UsageLog.input_tokens + UsageLog.output_tokens), 0)
+                func.coalesce(
+                    func.sum(
+                        UsageLog.input_tokens + UsageLog.output_tokens - cache_read
+                    ),
+                    0,
+                )
             ).where(
                 UsageLog.user_id == user_id,
                 UsageLog.created_at >= month_start,

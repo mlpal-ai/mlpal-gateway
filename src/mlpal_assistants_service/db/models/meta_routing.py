@@ -15,7 +15,7 @@ class MetaModelRouting(Base, TimestampMixin):
     Example:
         meta_model_tag = "mlpal"
         operation = "image_generation"
-        resolved_model_tag = "gemini-3-pro-image-preview"
+        resolved_model_tag = "gemini-3-pro-image"
 
     This allows mlpal, mlpal-flash, and mlpal-lite to route to the
     optimal model for each operation (chat, image_generation, tts, etc.)

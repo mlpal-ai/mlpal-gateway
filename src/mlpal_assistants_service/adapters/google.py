@@ -127,6 +127,20 @@ def _gemini_cached_tokens(usage_metadata: Any) -> int:
     return int(getattr(usage_metadata, "cached_content_token_count", 0) or 0) if usage_metadata else 0
 
 
+# Native Gemini image models share one capability profile: they accept image
+# inputs (reference images) but none of the chat-side features.
+_IMAGE_MODEL_CAPABILITIES = ModelCapabilities(
+    supports_images=True,
+    supports_pdf=False,
+    supports_audio=False,
+    supports_video=False,
+    supports_tools=False,
+    supports_structured_output=False,
+    max_context_tokens=1000000,
+    max_output_tokens=65536,
+)
+
+
 class GoogleAdapter(BaseAdapter):
     # GenerateContentConfig fields we forward via model_kwargs (snake_case,
     # as the google-genai SDK expects).
@@ -184,16 +198,10 @@ class GoogleAdapter(BaseAdapter):
             max_context_tokens=1000000,
             max_output_tokens=65536,
         ),
-        "gemini-3-pro-image-preview": ModelCapabilities(
-            supports_images=True,
-            supports_pdf=False,
-            supports_audio=False,
-            supports_video=False,
-            supports_tools=False,
-            supports_structured_output=False,
-            max_context_tokens=1000000,
-            max_output_tokens=65536,
-        ),
+        "gemini-3-pro-image-preview": _IMAGE_MODEL_CAPABILITIES,
+        "gemini-3-pro-image": _IMAGE_MODEL_CAPABILITIES,
+        "gemini-3.1-flash-image": _IMAGE_MODEL_CAPABILITIES,
+        "gemini-3.1-flash-lite-image": _IMAGE_MODEL_CAPABILITIES,
         # Gemini 2.5 family
         "gemini-2.5-pro": ModelCapabilities(
             supports_images=True,
@@ -1308,7 +1316,7 @@ class GoogleAdapter(BaseAdapter):
 
     # Default models for generation
     DEFAULT_EMBEDDING_MODEL = "text-embedding-004"
-    DEFAULT_IMAGE_MODEL = "gemini-3-pro-image-preview"  # Native image generation
+    DEFAULT_IMAGE_MODEL = "gemini-3-pro-image"  # Native image generation (Nano Banana Pro)
     DEFAULT_TRANSCRIPTION_MODEL = "gemini-3-flash-preview"  # Native audio understanding
     DEFAULT_TTS_MODEL = "gemini-2.5-pro-preview-tts"  # TTS via generate_content
 
@@ -1393,18 +1401,21 @@ class GoogleAdapter(BaseAdapter):
 
         Args:
             prompt: Text description of the image to generate
-            model: Model ID (default: gemini-3-pro-image-preview)
-            size: Output size (ImageSize enum or string)
-            quality: Quality level
-            n: Number of images (typically 1-4)
+            model: Model ID (default: gemini-3-pro-image)
+            size: Aspect ratio / preset / pixels; pixels also select the
+                resolution tier (see ImageSizeResolver.to_image_size_google)
+            quality: "hd" renders at 2K when the size does not already imply
+                a tier — Gemini has no separate quality knob
+            n: Accepted for interface parity; Gemini returns one image per call
             reference_images: Optional reference images for image-to-image
 
         Returns:
             ImageGenerationResponse with generated images
 
-        Models:
-            - gemini-3-pro-image-preview: Native Gemini image generation
-            - imagen-4.0-generate-001: Dedicated Imagen model (via Vertex AI)
+        Models (native Gemini image generation, all support reference images):
+            - gemini-3-pro-image: highest quality, 1K/2K/4K
+            - gemini-3.1-flash-image: fast, 512px/1K/2K/4K
+            - gemini-3.1-flash-lite-image: cheapest, 1K only
         """
         import base64
 
@@ -1412,8 +1423,8 @@ class GoogleAdapter(BaseAdapter):
         start_time = time.perf_counter()
 
         try:
-            # Use ImageSizeResolver to convert any size format to Google aspect ratio
             aspect_ratio = ImageSizeResolver.to_aspect_ratio_google(size)
+            image_size = ImageSizeResolver.to_image_size_google(size, quality, model)
 
             # Build content parts
             content_parts: list[Any] = [prompt]
@@ -1428,8 +1439,8 @@ class GoogleAdapter(BaseAdapter):
                             img_data = f.read()
                     elif ref.source == FileSource.URL:
                         import httpx
-                        with httpx.Client(timeout=30.0, follow_redirects=True) as client:
-                            response = client.get(ref.data)
+                        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+                            response = await client.get(ref.data)
                             response.raise_for_status()
                             img_data = response.content
                     else:
@@ -1445,6 +1456,7 @@ class GoogleAdapter(BaseAdapter):
                 response_modalities=["IMAGE", "TEXT"],
                 image_config=types.ImageConfig(
                     aspect_ratio=aspect_ratio,
+                    image_size=image_size,
                 ),
             )
 

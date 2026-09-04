@@ -84,7 +84,9 @@ def test_translate_in_plain_id_has_no_signature():
     ("anthropic", "chat", True),
     ("openai", "image_generation", False),   # non-chat operation
     ("openai", "embedding", False),
-    ("bedrock", "chat", False),              # served operation, edgeless provider
+    ("bedrock", "chat", True),               # open-weight lineup, translating edge
+    ("bedrock", "embedding", False),         # titan embeddings stay excluded
+    ("mistral", "chat", False),              # provider with no edge
 ])
 def test_is_served_chat_model(provider, operation, served):
     model = SimpleNamespace(provider=provider, capabilities={"operation": operation})
@@ -345,6 +347,34 @@ def _openai_core(monkeypatch, adapter):
     return MessagesV2Core(router, usage, pricing, billing), usage, billing
 
 
+def _bedrock_core(monkeypatch, adapter):
+    """Same fixture shape as _openai_core, but the model row is a bedrock
+    open-weight entry — the lineup the translating edge must serve."""
+    model = SimpleNamespace(
+        model_tag="deepseek.v3.2", provider="bedrock",
+        provider_model_id="us.deepseek.v3-2:0", display_name="DeepSeek V3.2",
+        capabilities={"tools": True}, max_output_tokens=32000,
+    )
+    router = MagicMock()
+    router.get_model = AsyncMock(return_value=model)
+    router.resolve_meta_model = AsyncMock(side_effect=lambda tag, op: (tag, None))
+    pricing = MagicMock()
+    pricing.get_pricing = AsyncMock(return_value=SimpleNamespace(
+        input_cu_rate=Decimal("1.0"), output_cu_rate=Decimal("4.0"), rate_unit="per_1m_tokens",
+        markup_multiplier=Decimal("3.0"),
+    ))
+    usage = MagicMock()
+    usage.record_usage = AsyncMock()
+    usage.redis = None
+    billing = MagicMock()
+    billing.can_make_request_cached = AsyncMock(return_value=(True, None, True))
+    billing.is_wallet_debit_active = AsyncMock(return_value=True)
+    billing.debit_wallet_usage = AsyncMock()
+    monkeypatch.setattr(core_mod, "get_adapter_factory",
+                        lambda: SimpleNamespace(get=lambda provider: adapter, resolve=lambda provider, pmid: (adapter, pmid)))
+    return MessagesV2Core(router, usage, pricing, billing), usage, billing
+
+
 def _api_key():
     return SimpleNamespace(user_id=1, id=2)
 
@@ -373,18 +403,86 @@ async def test_core_openai_nonstreaming(monkeypatch):
     assert body["usage"]["cache_read_input_tokens"] == 80
     kw = usage.record_usage.await_args.kwargs
     assert kw["provider"] == "openai"
-    assert kw["input_tokens"] == 100  # full input billed (v1 parity), cache surfaced separately
+    assert kw["input_tokens"] == 100  # full input recorded; cache surfaced separately
     assert kw["output_tokens"] == 20
     # CU is provider pass-through: per-token cu_rates divided by the ROW's
     # markup (3.0 in this fixture) before multiplying — mirror the impl order.
     _in_rate = Decimal("1.0") / Decimal("1000000") / Decimal("3.0")
     _out_rate = Decimal("4.0") / Decimal("1000000") / Decimal("3.0")
-    _provider_cu = Decimal("100") * _in_rate + Decimal("20") * _out_rate
+    # Cached tokens (80 of the 100 input) bill at the provider's cache-read
+    # rate (openai: 0.10x of input) — the uncached 20 at the full input rate.
+    _provider_cu = (
+        Decimal("20") * _in_rate
+        + Decimal("80") * _in_rate * Decimal("0.10")
+        + Decimal("20") * _out_rate
+    )
     assert kw["compute_units"] == _provider_cu
     assert kw["status"] == "success"
     assert "empty_completion" not in kw["cc_metadata"]  # normal completion → no flag
     await asyncio.sleep(0.05)
     core._post_billing.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_core_bedrock_nonstreaming(monkeypatch):
+    """Bedrock (open-weight catalog) serves on the Anthropic wire through the
+    same translating edge as openai/google — wire universality holds."""
+    adapter = _FakeAdapter(response=AdapterResponse(
+        content="hello from deepseek", model="us.deepseek.v3-2:0", provider="bedrock",
+        usage=TokenUsage(input_tokens=50, output_tokens=10),
+        finish_reason="stop",
+    ))
+    core, usage, _ = _bedrock_core(monkeypatch, adapter)
+    _stub_post_billing(core)
+    req = validate(json.dumps(
+        {"model": "deepseek.v3.2", "messages": [{"role": "user", "content": "hi"}]}
+    ).encode())
+
+    resp = await core.handle(req, _api_key(), {}, "trace-b1")
+
+    assert resp.status_code == 200
+    body = json.loads(resp.body)
+    assert body["content"] == [{"type": "text", "text": "hello from deepseek"}]
+    assert body["stop_reason"] == "end_turn"
+    kw = usage.record_usage.await_args.kwargs
+    assert kw["provider"] == "bedrock"
+    assert kw["status"] == "success"
+
+
+@pytest.mark.asyncio
+async def test_core_bedrock_streaming_tool_use(monkeypatch):
+    """A bedrock stream that ends in a tool call comes out as Anthropic SSE
+    with stop_reason tool_use — the shape agentic clients depend on."""
+    adapter = _FakeAdapter(chunks=[
+        StreamChunk(content="thinking...", done=False),
+        StreamChunk(content="", done=False, tool_calls=[{
+            "id": "call_1", "type": "function",
+            "function": {"name": "get_weather", "arguments": '{"city": "SF"}'},
+        }]),
+        StreamChunk(content="", done=True,
+                    usage=TokenUsage(input_tokens=30, output_tokens=8),
+                    finish_reason="stop"),
+    ])
+    core, usage, _ = _bedrock_core(monkeypatch, adapter)
+    _stub_post_billing(core)
+    req = validate(json.dumps({
+        "model": "deepseek.v3.2", "stream": True,
+        "messages": [{"role": "user", "content": "weather?"}],
+    }).encode())
+
+    resp = await core.handle(req, _api_key(), {}, "trace-b2")
+    events = b""
+    async for part in resp.body_iterator:
+        events += part if isinstance(part, bytes) else part.encode()
+
+    text = events.decode()
+    assert '"type": "tool_use"' in text or '"type":"tool_use"' in text
+    assert "get_weather" in text
+    assert "tool_use" in [
+        json.loads(line[6:]).get("delta", {}).get("stop_reason")
+        for line in text.splitlines() if line.startswith("data: ")
+        if "message_delta" in line
+    ]
 
 
 @pytest.mark.asyncio

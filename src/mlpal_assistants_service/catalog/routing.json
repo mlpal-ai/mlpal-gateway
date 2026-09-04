@@ -1,6 +1,6 @@
 {
   "_note": "Router-tag candidate lists \u2014 ONE source of truth with the rest of the catalog feed. For each (tag, operation) the candidates are priority-ordered and deliberately span providers: resolution picks the FIRST candidate this deployment actually serves (model active + provider configured), so a single-provider box still resolves every tag its provider can cover. Reconciled into meta_model_routing by scripts/reconcile_catalog.py.",
-  "updated": "2026-08-11",
+  "updated": "2026-08-28",
   "routes": [
     {
       "meta_model_tag": "mlpal",
@@ -65,12 +65,12 @@
       "operation": "image_generation",
       "candidates": [
         {
-          "model_tag": "gemini-3-pro-image-preview",
-          "reason": "best quality; supports 14 reference images"
+          "model_tag": "gpt-image-2",
+          "reason": "founder-tested best quality; arbitrary resolutions up to 3840px"
         },
         {
-          "model_tag": "gpt-image-2",
-          "reason": "OpenAI's current best image model"
+          "model_tag": "gemini-3-pro-image",
+          "reason": "Google fallback; 1K/2K/4K; up to 14 reference images"
         }
       ]
     },
@@ -169,12 +169,12 @@
       "operation": "image_generation",
       "candidates": [
         {
-          "model_tag": "gpt-image-1",
-          "reason": "fast, reliable generation"
+          "model_tag": "gemini-3.1-flash-image",
+          "reason": "Google's fast image tier (Nano Banana 2)"
         },
         {
-          "model_tag": "gemini-3.1-flash-image",
-          "reason": "Google's fast image tier"
+          "model_tag": "gpt-image-1.5",
+          "reason": "OpenAI fallback (gpt-image-1 is deprecated)"
         }
       ]
     },
@@ -269,12 +269,12 @@
       "operation": "image_generation",
       "candidates": [
         {
-          "model_tag": "gpt-image-1-mini",
+          "model_tag": "gemini-3.1-flash-lite-image",
           "reason": "cheapest image generation served"
         },
         {
-          "model_tag": "gemini-3.1-flash-image",
-          "reason": "Google fallback"
+          "model_tag": "gpt-image-1-mini",
+          "reason": "OpenAI economy fallback"
         }
       ]
     },

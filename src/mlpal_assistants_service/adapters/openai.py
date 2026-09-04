@@ -67,6 +67,10 @@ def _cached_tokens(usage: Any) -> int:
 # OpenAI Adapter
 # =============================================================================
 
+# Message keys the gateway understands but OpenAI-compatible servers do not.
+_GATEWAY_ONLY_MESSAGE_KEYS = frozenset({"files", "images", "documents", "cache_control"})
+
+
 class OpenAIAdapter(BaseAdapter):
     # Responses-API params we forward via model_kwargs (curated; the adapter
     # speaks the Responses wire, so chat-completions-only params like
@@ -837,7 +841,7 @@ class OpenAIAdapter(BaseAdapter):
         role=tool results), so messages pass through minus gateway-only keys."""
         wire_messages = []
         for m in messages:
-            wm = {k: v for k, v in m.items() if k not in ("files", "images", "documents")}
+            wm = {k: v for k, v in m.items() if k not in _GATEWAY_ONLY_MESSAGE_KEYS}
             wire_messages.append(wm)
         params: dict[str, Any] = {
             "model": model,
@@ -1500,7 +1504,7 @@ class OpenAIAdapter(BaseAdapter):
 
     # Default models for generation
     DEFAULT_EMBEDDING_MODEL = "text-embedding-3-large"
-    DEFAULT_IMAGE_MODEL = "dall-e-3"  # or "gpt-image-1" for image-to-image
+    DEFAULT_IMAGE_MODEL = "gpt-image-2"  # DALL-E models are retired from the API
     DEFAULT_TTS_MODEL = "tts-1-hd"
     DEFAULT_TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 
@@ -1581,7 +1585,7 @@ class OpenAIAdapter(BaseAdapter):
 
         Args:
             prompt: Text description of the image to generate
-            model: Model ID (default: dall-e-3)
+            model: Model ID (default: gpt-image-2)
             size: Output size (ImageSize enum or string)
             quality: Quality level (standard or hd)
             n: Number of images (1 for DALL-E 3, 1-10 for DALL-E 2)
@@ -1761,8 +1765,8 @@ class OpenAIAdapter(BaseAdapter):
                     provider=self.provider_name,
                 )
 
-            # Use gpt-image-1 or similar model for image-to-image
-            image_model = model if "image" in model.lower() else "gpt-image-1"
+            # Only the gpt-image family has an edits endpoint.
+            image_model = model if model.startswith("gpt-image") else self.DEFAULT_IMAGE_MODEL
 
             # Use ImageSizeResolver to convert any size format to OpenAI pixels
             size_str = ImageSizeResolver.to_pixels_openai(size, model=image_model)

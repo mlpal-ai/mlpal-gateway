@@ -54,11 +54,12 @@ REGISTRY_FIELDS = (
 # feeds may carry them (the live dump does) but the reconcile ignores them.
 PRICING_KEY = ("model_tag", "operation")
 PRICING_FIELDS = (
-    "tier", "input_rate", "output_rate", "rate_unit", "markup_multiplier",
-    "cu_to_dollar",
+    "tier", "input_rate", "output_rate", "cache_read_rate", "rate_unit",
+    "markup_multiplier", "cu_to_dollar",
 )
 _NUMERIC = {
-    "input_rate", "output_rate", "markup_multiplier", "cu_to_dollar",
+    "input_rate", "output_rate", "cache_read_rate", "markup_multiplier",
+    "cu_to_dollar",
 }
 
 
@@ -295,7 +296,29 @@ async def reconcile(
         by_key[key].is_active = False
         summary.prices_deactivated += 1
     for row in price_plan.activate:
-        session.add(ModelPricing(is_active=True, effective_date=date.today(), **_pricing_kwargs(row)))
+        # Same-day re-reprice: a row with (tag, op, today) may already exist
+        # (possibly the one just deactivated above). uq_pricing spans ALL
+        # rows, not only active ones, so INSERT would violate it and fail the
+        # whole reconcile (hit live 2026-08-22: a correction shipped the same
+        # day as the price it corrected). Update that row in place instead.
+        existing_today = (
+            await session.execute(
+                select(ModelPricing).where(
+                    ModelPricing.model_tag == row["model_tag"],
+                    ModelPricing.operation == row["operation"],
+                    ModelPricing.effective_date == date.today(),
+                )
+            )
+        ).scalars().first()
+        if existing_today is not None:
+            for f in PRICING_FIELDS:
+                if f in row:
+                    setattr(existing_today, f, row[f])
+            existing_today.is_active = True
+        else:
+            session.add(
+                ModelPricing(is_active=True, effective_date=date.today(), **_pricing_kwargs(row))
+            )
         summary.prices_activated += 1
 
     if routing_feed is not None:

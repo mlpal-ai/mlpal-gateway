@@ -22,6 +22,22 @@ from mlpal_assistants_service.repositories import PricingRepository
 
 logger = logging.getLogger(__name__)
 
+# Providers whose standard cache-read price is NOT the global 0.10x of input.
+# Verified against provider pricing pages 2026-09-01: Google bills cache hits
+# (implicit and explicit, excluding explicit-cache storage fees) at 25% of the
+# input rate; OpenAI and Anthropic at 10%. Per-model exceptions live in
+# ModelPricing.cache_read_rate (e.g. claude-fable-5-1 at $0.25/MTok).
+_PROVIDER_CACHE_READ_MULTIPLIER = {"google": Decimal("0.25")}
+
+
+def provider_cache_read_multiplier(provider: str | None) -> Decimal:
+    """The provider's standard cache-read multiple of the input rate."""
+    from mlpal_assistants_service.core.config import get_settings
+
+    if provider in _PROVIDER_CACHE_READ_MULTIPLIER:
+        return _PROVIDER_CACHE_READ_MULTIPLIER[provider]
+    return get_settings().cache_read_multiplier
+
 
 class PricingService:
     """
@@ -49,7 +65,9 @@ class PricingService:
     """
 
     CACHE_TTL = 3600  # 1 hour
-    CACHE_PREFIX = "pricing:"
+    # Version the key whenever the serialized row shape changes: entries cached
+    # under an older prefix are simply never read again (v2: + cache_read_rate).
+    CACHE_PREFIX = "pricing:v2:"
 
     def __init__(
         self,
@@ -113,6 +131,11 @@ class PricingService:
         input_units: int | Decimal,
         output_units: int | Decimal = 0,
         operation: str = "chat",
+        cached_units: int | Decimal = 0,
+        cached_included: bool = True,
+        provider: str | None = None,
+        cache_write_5m_units: int | Decimal = 0,
+        cache_write_1h_units: int | Decimal = 0,
     ) -> Decimal:
         """The billed CU for a request: the model's real cost, pass-through.
 
@@ -120,6 +143,14 @@ class PricingService:
         provider cost with NO markup — the flat tier fee is the revenue. Stored
         rates still carry the legacy markup_multiplier column, so this divides
         it back out (ModelPricing.calculate_provider_cost).
+
+        Cache reads are billed at the provider's discounted rate, matching what
+        the provider charges us: the row's per-model cache_read_rate when set
+        (claude-fable-5-1), else input_rate x the provider's standard multiple
+        (OpenAI/Anthropic 0.10x, Google 0.25x — verified against provider
+        pricing pages 2026-09-01). `cached_included` says whether
+        `input_units` already contains the cached subset (OpenAI/Google usage
+        semantics: yes; Anthropic's v1-wire adapter: no).
         """
         pricing = await self.get_pricing(model_tag, operation)
 
@@ -127,7 +158,35 @@ class PricingService:
             logger.warning(f"No pricing found for {model_tag}:{operation}, using default")
             return self._calculate_default_cu(input_units, output_units)
 
-        return pricing.calculate_provider_cost(input_units, output_units)
+        cached = Decimal(cached_units or 0)
+        write_5m = Decimal(cache_write_5m_units or 0)
+        write_1h = Decimal(cache_write_1h_units or 0)
+        if cached <= 0 and write_5m <= 0 and write_1h <= 0:
+            return pricing.calculate_provider_cost(input_units, output_units)
+
+        # Cache WRITES (Anthropic only) bill at input_rate x 1.25 (5m) / x 2
+        # (1h); `cached_included` governs them exactly like reads.
+        uncached_input = Decimal(input_units)
+        if cached_included:
+            uncached_input = max(Decimal("0"), uncached_input - cached - write_5m - write_1h)
+
+        base = pricing.calculate_provider_cost(uncached_input, output_units)
+
+        cache_rate = getattr(pricing, "cache_read_rate", None)
+        if cache_rate is None:
+            cache_rate = pricing.input_rate * provider_cache_read_multiplier(provider)
+        divisor = (
+            Decimal("1000")
+            if pricing.rate_unit == "per_1k_tokens"
+            else Decimal("1000000")
+        )
+        cu_to_dollar = pricing.cu_to_dollar or Decimal("10")
+        settings = get_settings()
+        write_dollars = pricing.input_rate * (
+            write_5m * settings.cache_5m_write_multiplier
+            + write_1h * settings.cache_1h_write_multiplier
+        )
+        return base + (cached * cache_rate + write_dollars) / divisor / cu_to_dollar
 
 
     async def get_cost_breakdown(
@@ -373,6 +432,15 @@ class PricingService:
             "cu_to_dollar": str(pricing.cu_to_dollar),
             "input_cu_rate": str(pricing.input_cu_rate),
             "output_cu_rate": str(pricing.output_cu_rate),
+            # Per-model cache-read list price. MUST round-trip — a missing key
+            # here silently drops the model's own cache rate on any cache hit,
+            # falling back to the global multiplier (10x over-bill on
+            # claude-fable-5-1: $0.25/MTok billed as $1.00/MTok).
+            "cache_read_rate": (
+                str(pricing.cache_read_rate)
+                if pricing.cache_read_rate is not None
+                else None
+            ),
         }
 
     def _dict_to_pricing(self, data: dict) -> ModelPricing:
@@ -391,4 +459,8 @@ class PricingService:
         pricing.cu_to_dollar = Decimal(data["cu_to_dollar"])
         pricing.input_cu_rate = Decimal(data["input_cu_rate"])
         pricing.output_cu_rate = Decimal(data["output_cu_rate"])
+        # .get for forward-compat with entries cached before this field existed;
+        # those are also flushed by the CACHE_PREFIX version bump below.
+        crr = data.get("cache_read_rate")
+        pricing.cache_read_rate = Decimal(crr) if crr is not None else None
         return pricing

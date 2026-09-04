@@ -146,7 +146,17 @@ class UsageService:
 
         if record.get("status") != "success" or record.get("operation") == FEE_OPERATION:
             return
-        tokens = int(record.get("input_tokens") or 0) + int(record.get("output_tokens") or 0)
+        # Cache READS don't count toward the free tier (founder decision,
+        # 2026-08-29): our canonical input_tokens is the full prompt including
+        # the cached portion, so subtract the cache-read count recorded in
+        # cc_metadata. Cache WRITES stay counted — they're part of input.
+        meta = record.get("cc_metadata") or {}
+        cache_read = int(meta.get("cache_read_input_tokens") or 0)
+        tokens = (
+            int(record.get("input_tokens") or 0)
+            + int(record.get("output_tokens") or 0)
+            - cache_read
+        )
         if tokens <= 0:
             return
         await maybe_charge_platform_fee(

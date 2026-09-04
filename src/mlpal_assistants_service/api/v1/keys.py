@@ -83,6 +83,7 @@ async def create_api_key(
         created_at=api_key.created_at,
         model_policy=api_key.model_policy,
         budgets=api_key.budgets,
+        capture_policy=api_key.capture_policy,
         secret=secret,
     )
 
@@ -143,6 +144,7 @@ async def list_api_keys(
                 created_at=k.created_at,
                 model_policy=k.model_policy,
                 budgets=k.budgets,
+                capture_policy=k.capture_policy,
                 paused=paused,
                 paused_reason="insufficient_balance" if paused else None,
             )
@@ -187,6 +189,7 @@ async def get_api_key(
         created_at=api_key.created_at,
         model_policy=api_key.model_policy,
         budgets=api_key.budgets,
+        capture_policy=api_key.capture_policy,
         paused=paused,
         paused_reason="insufficient_balance" if paused else None,
     )
@@ -220,6 +223,12 @@ async def update_api_key_policy(
         updates["budgets"] = (
             [b.model_dump() for b in body.budgets] if body.budgets else None
         )
+    if "capture_policy" in fields:
+        updates["capture_policy"] = (
+            body.capture_policy.model_dump(exclude_none=True)
+            if body.capture_policy
+            else None
+        )
     if "rate_limit_tier" in fields and body.rate_limit_tier is not None:
         updates["rate_limit_tier"] = body.rate_limit_tier
     if "is_active" in fields and body.is_active is not None:
@@ -244,6 +253,7 @@ async def update_api_key_policy(
         created_at=api_key.created_at,
         model_policy=api_key.model_policy,
         budgets=api_key.budgets,
+        capture_policy=api_key.capture_policy,
     )
 
 
@@ -344,6 +354,7 @@ async def create_cde_api_key(
         created_at=api_key.created_at,
         model_policy=api_key.model_policy,
         budgets=api_key.budgets,
+        capture_policy=api_key.capture_policy,
         secret=secret,
     )
 

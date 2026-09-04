@@ -144,6 +144,14 @@ class APIKey(Base, TimestampMixin):
         JSONB,
         nullable=True,
     )
+    # capture_policy: {"mode": "on"|"off", "models": ["tag", ...]?}. NULL =
+    #   inherit the deployment default. "off" is a HARD promise — no default
+    #   or operator setting re-enables capture for the key (see
+    #   services/capture.py key_allows_capture).
+    capture_policy: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
 
     def __repr__(self) -> str:
         return f"<APIKey(id={self.id}, name={self.name}, prefix={self.key_prefix})>"

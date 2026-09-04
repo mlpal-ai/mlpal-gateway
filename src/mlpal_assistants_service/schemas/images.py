@@ -83,8 +83,11 @@ class ImageGenerationRequest(BaseSchema):
         description="Text description of the image to generate",
     )
     model: str = Field(
-        default="dall-e-3",
-        description="Image generation model to use",
+        default="mlpal",
+        description=(
+            "Image model tag, or a router tag ('mlpal', 'mlpal-flash', 'mlpal-lite') "
+            "that resolves to the best served model"
+        ),
     )
     n: int = Field(
         default=1,
@@ -104,17 +107,81 @@ class ImageGenerationRequest(BaseSchema):
     )
     quality: Literal["standard", "hd"] = Field(
         default="standard",
-        description="Image quality level",
+        description=(
+            "Image quality level. OpenAI gpt-image: standard=medium, hd=high. "
+            "Google Gemini: hd renders at 2K instead of 1K (explicit pixel sizes "
+            "select 1K/2K/4K directly)."
+        ),
     )
     reference_images: list[ReferenceImage] | None = Field(
         default=None,
         max_length=14,
         description=(
             "Reference images for image-to-image generation. "
-            "Supported by Google Gemini (up to 14 images) and OpenAI gpt-image-1. "
-            "Used for style transfer, image editing, and guided generation."
+            "Supported by Google Gemini image models (up to 14 images) and the "
+            "OpenAI gpt-image family. Used for style transfer, image editing, "
+            "and guided generation."
         ),
     )
+    # Job control. Named `wait`, NOT `background` — OpenAI's Images API already
+    # uses `background` for PNG transparency, and this surface may pass that
+    # through someday.
+    wait: bool = Field(
+        default=True,
+        description=(
+            "When false, the request returns 202 immediately with a job id; "
+            "poll GET /v1/images/jobs/{id} for the result. Long renders "
+            "(hd/4K edits) should use this — a single HTTP connection is "
+            "capped at ~120s by the edge."
+        ),
+    )
+    idempotency_key: str | None = Field(
+        default=None,
+        max_length=128,
+        description=(
+            "Optional client token for background submits. Retrying a submit "
+            "with the same key returns the existing job instead of creating "
+            "(and billing) a second one. Reusing a key with a different "
+            "request body is rejected with 409."
+        ),
+    )
+
+
+class ImageJobSubmitted(BaseSchema):
+    """Immediate response to a background submit (`wait: false`)."""
+
+    id: str = Field(..., description="Job id — poll GET /v1/images/jobs/{id}")
+    status: Literal["queued", "running", "succeeded", "failed"] = Field(...)
+    created_at: datetime = Field(...)
+
+
+class ImageJobError(BaseSchema):
+    """Structured failure for a background job."""
+
+    code: Literal["provider_error", "worker_lost", "invalid_request"] = Field(
+        ...,
+        description=(
+            "provider_error: upstream failed; worker_lost: the serving pod "
+            "died mid-render (nothing was billed — safe to resubmit); "
+            "invalid_request: validation that only surfaces at execution."
+        ),
+    )
+    message: str = Field(...)
+
+
+class ImageJobStatusResponse(BaseSchema):
+    """Poll response for a background image job."""
+
+    id: str = Field(...)
+    status: Literal["queued", "running", "succeeded", "failed"] = Field(...)
+    created_at: datetime = Field(...)
+    started_at: datetime | None = Field(default=None)
+    finished_at: datetime | None = Field(default=None)
+    result: "ImageGenerationResponse | None" = Field(
+        default=None,
+        description="On success: the exact same payload a sync request returns.",
+    )
+    error: ImageJobError | None = Field(default=None)
 
 
 class GeneratedImage(BaseSchema):
@@ -194,7 +261,7 @@ class ImageGenerationResponse(BaseSchema):
         default=None,
         description=(
             "Routing metadata when using MLPal meta-models. "
-            "Shows which actual model was used (e.g., mlpal -> gemini-3-pro-image-preview)."
+            "Shows which actual model was used (e.g., mlpal -> gpt-image-2)."
         ),
     )
 
@@ -212,19 +279,24 @@ class ImageGenerationResponse(BaseSchema):
                 ],
                 "model": "mlpal",
                 "cost": {
-                    "model_name": "gemini-3-pro-image-preview",
-                    "provider": "google",
+                    "model_name": "gpt-image-2",
+                    "provider": "openai",
                     "images_generated": 1,
                     "latency_ms": 5200,
-                    "compute_units": 0.04,
+                    "compute_units": 0.0159,
                 },
                 "routing": {
                     "requested_model": "mlpal",
-                    "resolved_model": "gemini-3-pro-image-preview",
-                    "resolved_provider": "google",
+                    "resolved_model": "gpt-image-2",
+                    "resolved_provider": "openai",
                     "operation": "image_generation",
                     "strategy": "quality",
                 },
             }
         }
     }
+
+
+# ImageJobStatusResponse.result forward-references ImageGenerationResponse
+# (defined above it so the request/job schemas read top-down); resolve it now.
+ImageJobStatusResponse.model_rebuild()

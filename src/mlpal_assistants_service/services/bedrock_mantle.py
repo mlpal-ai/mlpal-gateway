@@ -226,6 +226,7 @@ def compute_units_from_usage(
     usage: dict[str, Any],
     input_cu_per_unit: Decimal,
     output_cu_per_unit: Decimal,
+    cache_read_cu_per_unit: Decimal | None = None,
 ) -> Decimal:
     """Compute total CU from an Anthropic Messages `usage` object,
     accounting for cache token tiers.
@@ -238,7 +239,10 @@ def compute_units_from_usage(
       input_tokens                    → 1.00x
       ephemeral_5m_input_tokens       → 1.25x (cache write, 5m TTL)
       ephemeral_1h_input_tokens       → 2.00x (cache write, 1h TTL)
-      cache_read_input_tokens         → 0.10x
+      cache_read_input_tokens         → per-model rate when the row sets
+                                        cache_read_rate (claude-fable-5-1:
+                                        $0.25/MTok = 0.025x), else the
+                                        global 0.10x multiplier
       output_tokens                   → output_cu_per_unit
     """
     from mlpal_assistants_service.core.config import get_settings
@@ -250,12 +254,17 @@ def compute_units_from_usage(
     cache_5m = Decimal(cache_creation.get("ephemeral_5m_input_tokens") or 0)
     cache_1h = Decimal(cache_creation.get("ephemeral_1h_input_tokens") or 0)
     cache_read = Decimal(usage.get("cache_read_input_tokens") or 0)
+    cache_read_rate = (
+        cache_read_cu_per_unit
+        if cache_read_cu_per_unit is not None
+        else input_cu_per_unit * settings.cache_read_multiplier
+    )
 
     return (
         inp * input_cu_per_unit
         + cache_5m * input_cu_per_unit * settings.cache_5m_write_multiplier
         + cache_1h * input_cu_per_unit * settings.cache_1h_write_multiplier
-        + cache_read * input_cu_per_unit * settings.cache_read_multiplier
+        + cache_read * cache_read_rate
         + out * output_cu_per_unit
     )
 

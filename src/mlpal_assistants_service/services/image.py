@@ -133,7 +133,7 @@ class ImageService:
             api_key_id=456,
             request=ImageGenerationRequest(
                 prompt="A sunset over mountains",
-                model="dall-e-3",
+                model="gpt-image-2",
             ),
         )
         # response.data[0].url is a presigned S3 URL

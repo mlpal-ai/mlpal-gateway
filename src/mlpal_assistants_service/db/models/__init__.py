@@ -9,6 +9,7 @@ from mlpal_assistants_service.db.models.api_key import APIKey
 from mlpal_assistants_service.db.models.base import Base
 from mlpal_assistants_service.db.models.connections import TenantConnection, TenantModel
 from mlpal_assistants_service.db.models.feed import FeedInstall, GatewayMeta
+from mlpal_assistants_service.db.models.image_job import ImageJob
 from mlpal_assistants_service.db.models.meta_routing import MetaModelRouting
 from mlpal_assistants_service.db.models.model_feedback import (
     FEEDBACK_OUTCOMES,
@@ -33,6 +34,7 @@ __all__ = [
     "TenantModel",
     "FeedInstall",
     "GatewayMeta",
+    "ImageJob",
     "Base",
     "APIKey",
     "MetaModelRouting",

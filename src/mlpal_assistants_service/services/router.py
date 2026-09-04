@@ -381,7 +381,7 @@ class ModelRouter:
 
         Example:
             >>> resolved, metadata = await router.resolve_meta_model("mlpal", "image_generation")
-            >>> print(resolved)  # "gemini-3-pro-image-preview"
+            >>> print(resolved)  # "gemini-3-pro-image"
             >>> print(metadata.strategy)  # "quality"
         """
         # Check if it's a meta-model
@@ -472,7 +472,7 @@ class ModelRouter:
             >>> adapter, model_id, model, routing = await router.get_adapter_for_operation(
             ...     "mlpal", "image_generation"
             ... )
-            >>> # adapter is GoogleAdapter, model_id is "gemini-3-pro-image-preview"
+            >>> # adapter is GoogleAdapter, model_id is "gemini-3-pro-image"
             >>> # routing.strategy is "quality"
         """
         # Resolve meta-model if applicable
