@@ -45,6 +45,7 @@ from mlpal_assistants_service.api.v2.messages import _require_messages_scope
 from mlpal_assistants_service.repositories.feedback_repository import FeedbackRepository
 from mlpal_assistants_service.repositories.usage_repository import UsageRepository
 from mlpal_assistants_service.services.catalog import available_profiles, build_catalog
+from mlpal_assistants_service.services.policy import PolicyService
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +106,13 @@ async def get_catalog(
         redis_client, _FEEDBACK_CACHE_KEY,
         lambda: FeedbackRepository(session).get_quality_by_model(),
     )
+    # Key-scoped: models outside this key's model_policy are unavailable in the
+    # ladder and absent from `models` (same rule as /v1/models).
+    policy = getattr(api_key, "model_policy", None)
+    allowed = (lambda tag: PolicyService.is_model_allowed(policy, tag)) if policy else None
     catalog = await build_catalog(
         profile, model_router, pricing_service,
-        latency_stats=latency, feedback_quality=feedback,
+        latency_stats=latency, feedback_quality=feedback, allowed=allowed,
     )
     if catalog is None:
         return Response(

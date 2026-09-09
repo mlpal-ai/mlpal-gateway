@@ -1,7 +1,7 @@
 # MLPal Gateway — Master Feature List
 
 One codebase, two deployments. ✅ = present · ⚙️ = present, different default/backing · — = absent by design.
-Updated 2026-09-08.
+Updated 2026-09-09.
 
 ## Inference surfaces
 
@@ -15,6 +15,8 @@ Updated 2026-09-08.
 | **Prompt caching on both wires**: Anthropic `cache_control` breakpoints pass through natively on `/v1/messages` and via `cache_control` on OpenAI-wire messages (max 4/request); OpenAI + Gemini implicit caching surfaces as `cached_tokens` (Gemini needs a ≥4096-token prefix) | ✅ | ✅ |
 | `fallback_models` (up to 3, tried on retriable serving failures, billed as-served) + `model_kwargs` (provider-native params, unknown keys rejected) on the OpenAI wire | ✅ | ✅ |
 | `POST /v1/messages/count_tokens` passthrough | ✅ | ✅ |
+| **Universal `reasoning_effort`** — one ordinal ladder (`none < minimal < low < medium < high < xhigh < max`) on the OpenAI wire (`reasoning_effort`, `reasoning_effort_strict`) and the Anthropic wire (`output_config.effort`, or a `thinking` budget band), mapped to OpenAI `reasoning.effort` / Anthropic `output_config.effort` / Gemini `thinking_level`; per-model rungs probe-verified in the catalog (`effort_levels`, `default_effort`); unsupported rungs clamp toward intent and are reported (`metadata.reasoning_effort`, `X-MLPal-Reasoning-Effort`), strict mode → 400 | ✅ | ✅ |
+| `reasoning_tokens` in usage on both wires (OpenAI, Anthropic thinking tokens, Gemini thoughts) | ✅ | ✅ |
 | **Async image jobs**: `wait:false` returns a job id, poll `GET /v1/images/jobs/{id}`; image quality tiers (`lite`/standard/`hd`) priced per tier | ✅ | ✅ |
 | `X-MLPal-Compute-Units` header on native responses | ✅ | ✅ |
 | Deprecated `/v2/*` aliases (yodex transition) | ✅ until drained | — (`/v2` reserved) |
@@ -44,6 +46,7 @@ Updated 2026-09-08.
 | Key management principal | Cognito JWT (frontend) **or** admin key | local admin key (bootstrap-printed) |
 | Permission scopes (`messages`, `chat`, `embedding`, …, `admin`, `*`) | ✅ | ✅ |
 | Model policy allow/deny globs (deny wins; follows router-tag resolution) | ✅ | ✅ |
+| **Key-scoped listings**: `/v1/models`, `/v1/models/{tag}` (403 when denied), `/v1/messages/models`, and `/v1/catalog` tiers all show only what the key may use; a denied tier primary falls to the first allowed alternate | ✅ | ✅ |
 | Spend budgets: **multiple calendar windows** (daily/weekly/monthly/lifetime), `cu`/`usd` at fixed peg, pre-flight enforcement, never cuts a running request, Redis counters re-seeded from `usage_logs`, fail-open | ✅ | ✅ |
 | Rate limiting (Redis, per-tier) | ✅ | ✅ |
 | Identical admission on ALL inference surfaces | ✅ | ✅ |
@@ -54,7 +57,7 @@ Updated 2026-09-08.
 | Feature | Managed | Self-hosted |
 |---|---|---|
 | Pass-through CU metering (single figure, no markup, no meter) | ✅ | ✅ |
-| **Cache-aware metering reproduces list price exactly**: cache reads at the provider's tier (per-model `cache_read_rate`, e.g. Claude Fable 5.1 $0.25/MTok; else 0.10× OpenAI/Anthropic, 0.25× Gemini), Anthropic cache writes at 1.25× (5m) / 2× (1h), OpenAI cache writes at 1.25× (gpt-5.6/gpt-6 generation); one usage convention on the OpenAI wire (`input_tokens` = whole prompt, `cached_tokens` + `cache_write_tokens` subsets) | ✅ | ✅ |
+| **Cache-aware metering reproduces list price exactly**: cache reads at the provider's tier (per-model `cache_read_rate`, e.g. Claude Fable 5.1 $0.25/MTok; else 0.10× OpenAI/Anthropic, 0.25× Gemini), Anthropic cache writes at 1.25× (5m) / 2× (1h), OpenAI cache writes at 1.25× (gpt-5.6/gpt-6 generation), Gemini thinking tokens billed as output; one usage convention on the OpenAI wire (`input_tokens` = whole prompt, `cached_tokens` + `cache_write_tokens` subsets) | ✅ | ✅ |
 | `usage_logs` per request: tokens, CU, latency, status, error, surface tag | ✅ | ✅ |
 | `GET /v1/usage/summary` + daily buckets | ✅ | ✅ |
 | Wallet debits (payments service) + debit-retry worker + billing gate | ✅ | — (local gate: allow-all, no callouts; spend control = per-key budgets) |

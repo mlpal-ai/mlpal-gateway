@@ -38,6 +38,18 @@ from mlpal_assistants_service.core.exceptions import (
 logger = logging.getLogger(__name__)
 
 
+def _apply_effort(params: dict[str, Any], reasoning_effort: str | None) -> None:
+    """Universal effort → Anthropic knobs. `none` means what the client said:
+    no thinking at all. Other rungs ride `output_config.effort` (the resolver
+    only hands us rungs this model accepts)."""
+    if not reasoning_effort:
+        return
+    if reasoning_effort == "none":
+        params["thinking"] = {"type": "disabled"}
+        return
+    params["output_config"] = {**params.get("output_config", {}), "effort": reasoning_effort}
+
+
 def _append_system_text(system: str | list | None, text: str) -> str | list:
     """Append instruction text to a system prompt that may be a string or a
     block list (block lists appear when a cache_control breakpoint is set)."""
@@ -48,7 +60,7 @@ def _append_system_text(system: str | list | None, text: str) -> str | list:
 
 class AnthropicAdapter(BaseAdapter):
     # Messages-API params we forward via model_kwargs.
-    SUPPORTED_KWARGS = frozenset({"top_k", "metadata", "service_tier", "thinking"})
+    SUPPORTED_KWARGS = frozenset({"top_k", "metadata", "service_tier", "thinking", "output_config"})
 
     """
     Adapter for Anthropic API using native SDK.
@@ -354,6 +366,7 @@ class AnthropicAdapter(BaseAdapter):
         response_format: dict[str, Any] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AdapterResponse:
         """Execute chat completion via Anthropic API."""
         start_time = time.perf_counter()
@@ -444,6 +457,7 @@ class AnthropicAdapter(BaseAdapter):
             # Model-specific kwargs, pre-validated by the caller.
             if model_kwargs:
                 params["extra_body"] = {**params.get("extra_body", {}), **model_kwargs}
+            _apply_effort(params, reasoning_effort)
 
             # Make API call (use beta API for MCP)
             if use_beta:
@@ -546,6 +560,7 @@ class AnthropicAdapter(BaseAdapter):
         mcp_servers: list[dict[str, Any]] | None = None,
         stream_thinking: bool = False,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Execute streaming chat completion."""
         try:
@@ -570,6 +585,9 @@ class AnthropicAdapter(BaseAdapter):
                 params["top_p"] = top_p
             if stop is not None:
                 params["stop_sequences"] = stop
+            if model_kwargs:
+                params["extra_body"] = {**params.get("extra_body", {}), **model_kwargs}
+            _apply_effort(params, reasoning_effort)
 
             if tools:
                 params["tools"] = self.convert_tools(tools)
@@ -760,12 +778,17 @@ class AnthropicAdapter(BaseAdapter):
         if not creation:
             # Older usage shape: a single untiered total (5m is the default TTL).
             write_5m = getattr(usage, "cache_creation_input_tokens", 0) or 0
+        # Anthropic reports thinking tokens (subset of output) on newer models
+        # via output_tokens_details.thinking_tokens; absent → unknown (None).
+        details = getattr(usage, "output_tokens_details", None)
+        thinking = getattr(details, "thinking_tokens", None) if details is not None else None
         return TokenUsage(
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,
             cached_tokens=getattr(usage, "cache_read_input_tokens", 0) or 0,
             cache_write_5m_tokens=write_5m,
             cache_write_1h_tokens=write_1h,
+            reasoning_tokens=int(thinking) if thinking is not None else None,
         )
 
     def _normalize_turn(

@@ -69,6 +69,14 @@ def _completions_cache_tokens(usage: Any) -> tuple[int, int]:
     )
 
 
+def _reasoning_tokens(usage: Any) -> int | None:
+    """Hidden reasoning tokens (subset of output_tokens) from a Responses usage."""
+    details = getattr(usage, "output_tokens_details", None) if usage else None
+    if details is None:
+        return None
+    return int(getattr(details, "reasoning_tokens", 0) or 0)
+
+
 def _cached_tokens(usage: Any) -> int:
     """Cached (prompt-cache hit) input tokens from a Responses API usage object.
 
@@ -538,6 +546,7 @@ class OpenAIAdapter(BaseAdapter):
         response_format: dict[str, Any] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AdapterResponse:
         """Execute chat completion via OpenAI Responses API."""
         start_time = time.perf_counter()
@@ -610,6 +619,9 @@ class OpenAIAdapter(BaseAdapter):
             # the wire body (Responses API) — never silently dropped upstream.
             if model_kwargs:
                 params["extra_body"] = {**params.get("extra_body", {}), **model_kwargs}
+            # Universal effort, already resolved to a rung this model accepts.
+            if reasoning_effort:
+                params["reasoning"] = {**params.get("reasoning", {}), "effort": reasoning_effort}
 
             # Make API call via Responses API
             response = await self._client.responses.create(**params)
@@ -640,6 +652,7 @@ class OpenAIAdapter(BaseAdapter):
                 output_tokens=response.usage.output_tokens if response.usage else 0,
                 cached_tokens=_cached_tokens(response.usage),
                 cache_write_5m_tokens=_cache_write_tokens(response.usage),
+                reasoning_tokens=_reasoning_tokens(response.usage),
             )
 
             # Derive finish reason
@@ -699,6 +712,7 @@ class OpenAIAdapter(BaseAdapter):
         mcp_servers: list[dict[str, Any]] | None = None,
         stream_thinking: bool = False,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Execute streaming chat completion via Responses API."""
         if self.wire == "chat_completions":
@@ -769,6 +783,9 @@ class OpenAIAdapter(BaseAdapter):
 
             if model_kwargs:
                 params["extra_body"] = {**params.get("extra_body", {}), **model_kwargs}
+            # Universal effort, already resolved to a rung this model accepts.
+            if reasoning_effort:
+                params["reasoning"] = {**params.get("reasoning", {}), "effort": reasoning_effort}
             stream = await self._client.responses.create(**params)
 
             # The Responses API carries a function call's id+name on the output_item.added
@@ -837,6 +854,7 @@ class OpenAIAdapter(BaseAdapter):
                         output_tokens=resp.usage.output_tokens if resp.usage else 0,
                         cached_tokens=_cached_tokens(resp.usage),
                         cache_write_5m_tokens=_cache_write_tokens(resp.usage),
+                        reasoning_tokens=_reasoning_tokens(resp.usage),
                     )
                     yield StreamChunk(
                         content="",

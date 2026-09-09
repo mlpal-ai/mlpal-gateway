@@ -102,6 +102,10 @@ def _apply_thinking_output_reserve(
     reserve = get_settings().google_thinking_output_reserve
     if has_tools or reserve <= 0 or max_tokens is None:
         return
+    # A client-chosen effort (thinking_level) is an explicit instruction; the
+    # budget cap below would silently replace it (and can disable thinking).
+    if getattr(config.get("thinking_config"), "thinking_level", None):
+        return
     if "gemini-3" not in model and "gemini-2.5" not in model:
         return
     can_disable, min_active = _thinking_limits(model)
@@ -114,6 +118,27 @@ def _apply_thinking_output_reserve(
     include_thoughts = getattr(existing, "include_thoughts", None) if existing else None
     config["thinking_config"] = types.ThinkingConfig(
         thinking_budget=budget, include_thoughts=include_thoughts
+    )
+
+
+def _gemini_thought_tokens(usage_metadata: Any) -> int:
+    """Thinking tokens. Google reports them OUTSIDE candidates_token_count and
+    bills them as output — they must be added, not ignored."""
+    return int(getattr(usage_metadata, "thoughts_token_count", 0) or 0) if usage_metadata else 0
+
+
+def _gemini_output_tokens(usage_metadata: Any) -> int:
+    if not usage_metadata:
+        return 0
+    return int(usage_metadata.candidates_token_count or 0) + _gemini_thought_tokens(usage_metadata)
+
+
+def _gemini_token_usage(usage_metadata: Any) -> TokenUsage:
+    return TokenUsage(
+        input_tokens=(usage_metadata.prompt_token_count or 0) if usage_metadata else 0,
+        output_tokens=_gemini_output_tokens(usage_metadata),
+        cached_tokens=_gemini_cached_tokens(usage_metadata),
+        reasoning_tokens=_gemini_thought_tokens(usage_metadata),
     )
 
 
@@ -460,6 +485,7 @@ class GoogleAdapter(BaseAdapter):
         mcp_servers: list[dict[str, Any]] | None = None,
         prefix_cache_ttl: int | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AdapterResponse:
         """Execute chat completion via Google AI API.
 
@@ -536,6 +562,13 @@ class GoogleAdapter(BaseAdapter):
             # GenerateContentConfig (the SDK accepts plain dicts for nested types).
             if model_kwargs:
                 config.update(model_kwargs)
+            # Universal effort (resolved to a level this model accepts) wins
+            # over the tool-calling default level set above.
+            if reasoning_effort:
+                config["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=reasoning_effort,
+                    include_thoughts=getattr(config.get("thinking_config"), "include_thoughts", None),
+                )
 
             _apply_thinking_output_reserve(config, model, max_tokens, has_tools=bool(tools))
 
@@ -609,11 +642,7 @@ class GoogleAdapter(BaseAdapter):
                         tool_calls.append(tool_call_data)
 
             # Get token counts
-            usage = TokenUsage(
-                input_tokens=(response.usage_metadata.prompt_token_count or 0) if response.usage_metadata else 0,
-                output_tokens=(response.usage_metadata.candidates_token_count or 0) if response.usage_metadata else 0,
-                cached_tokens=_gemini_cached_tokens(response.usage_metadata),
-            )
+            usage = _gemini_token_usage(response.usage_metadata)
 
             return AdapterResponse(
                 content=content,
@@ -666,6 +695,7 @@ class GoogleAdapter(BaseAdapter):
         stream_thinking: bool = False,
         prefix_cache_ttl: int | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Execute streaming chat completion.
 
@@ -743,6 +773,13 @@ class GoogleAdapter(BaseAdapter):
             # GenerateContentConfig (the SDK accepts plain dicts for nested types).
             if model_kwargs:
                 config.update(model_kwargs)
+            # Universal effort (resolved to a level this model accepts) wins
+            # over the tool-calling default level set above.
+            if reasoning_effort:
+                config["thinking_config"] = types.ThinkingConfig(
+                    thinking_level=reasoning_effort,
+                    include_thoughts=getattr(config.get("thinking_config"), "include_thoughts", None),
+                )
 
             _apply_thinking_output_reserve(config, model, max_tokens, has_tools=bool(tools))
 
@@ -775,6 +812,7 @@ class GoogleAdapter(BaseAdapter):
 
             total_input_tokens = 0
             total_output_tokens = 0
+            total_reasoning_tokens = 0
             total_cached_tokens = 0
             pending_tool_calls: list[dict[str, Any]] = []
 
@@ -812,7 +850,8 @@ class GoogleAdapter(BaseAdapter):
                 # Track tokens
                 if chunk.usage_metadata:
                     total_input_tokens = chunk.usage_metadata.prompt_token_count or 0
-                    total_output_tokens = chunk.usage_metadata.candidates_token_count or 0
+                    total_output_tokens = _gemini_output_tokens(chunk.usage_metadata)
+                    total_reasoning_tokens = _gemini_thought_tokens(chunk.usage_metadata)
                     total_cached_tokens = _gemini_cached_tokens(chunk.usage_metadata)
 
             # Emit tool calls if any
@@ -830,6 +869,7 @@ class GoogleAdapter(BaseAdapter):
                 usage=TokenUsage(
                     input_tokens=total_input_tokens,
                     output_tokens=total_output_tokens,
+                    reasoning_tokens=total_reasoning_tokens,
                     cached_tokens=total_cached_tokens,
                 ),
                 finish_reason="stop",

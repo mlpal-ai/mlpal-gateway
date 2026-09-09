@@ -303,6 +303,7 @@ class MessagesV2Core:
             model_tag=model.model_tag,
             provider=model.provider,
             provider_model_id=model.provider_model_id,
+            capabilities=getattr(model, "capabilities", None),
             backend=(
                 "byom:custom"
                 if byom is not None
@@ -381,7 +382,7 @@ class MessagesV2Core:
             content=result.body,
             status_code=result.status_code,
             media_type=result.media_type,
-            headers={**_cu_headers(compute_units), **_conn_headers(ctx)},
+            headers={**_cu_headers(compute_units), **_conn_headers(ctx), **_effort_headers(ctx)},
         )
 
     # Serving failures worth advancing to the next fallback candidate for.
@@ -806,6 +807,15 @@ async def _capture_v2(
 def _cu_headers(compute_units: Decimal) -> dict[str, str]:
     """CU envelope for the Anthropic-wire response (body stays untouched)."""
     return {"X-MLPal-Compute-Units": str(compute_units)}
+
+
+def _effort_headers(ctx: RequestContext) -> dict[str, str]:
+    """Never-silent effort resolution on the translating edge (body stays pure
+    Anthropic): `requested->applied`, e.g. `max->high` when clamped."""
+    res = ctx.cc_metadata.get("reasoning_effort")
+    if not isinstance(res, dict) or not res.get("requested"):
+        return {}
+    return {"X-MLPal-Reasoning-Effort": f"{res['requested']}->{res.get('applied')}"}
 
 
 def _conn_headers(ctx: RequestContext) -> dict[str, str]:

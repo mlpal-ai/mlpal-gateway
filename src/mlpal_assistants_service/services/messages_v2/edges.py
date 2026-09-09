@@ -57,6 +57,8 @@ class RequestContext:
     # True when the provider spent the token budget without producing any visible
     # output (reasoning-model empty completion). Metered for observability.
     empty_completion: bool = False
+    # Registry `capabilities` of the served model (effort_levels etc.).
+    capabilities: Any = None
     cc_metadata: dict[str, Any] = field(default_factory=dict)
 
     def report(

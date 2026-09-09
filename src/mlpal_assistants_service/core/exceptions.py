@@ -257,6 +257,22 @@ class ValidationError(AssistantsServiceError):
     pass
 
 
+class UnsupportedEffortError(AssistantsServiceError):
+    """`reasoning_effort_strict` was set and the model does not accept the
+    requested rung (no clamp allowed). Nothing was sent to the provider."""
+
+    def __init__(self, model: str, requested: str, supported: list[str]) -> None:
+        super().__init__(
+            f"reasoning_effort {requested!r} is not supported by {model}; "
+            f"supported: {', '.join(supported) or 'none (no effort lever)'}. "
+            "Drop reasoning_effort_strict to clamp to the nearest supported rung.",
+            {"model": model, "requested": requested, "supported": supported},
+        )
+        self.model = model
+        self.requested = requested
+        self.supported = supported
+
+
 class DatabaseError(AssistantsServiceError):
     """Raised when database operation fails."""
 

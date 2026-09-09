@@ -34,6 +34,7 @@ from mlpal_assistants_service.services.messages_v2.schemas import (
 )
 from mlpal_assistants_service.services.policy import PolicyService
 from mlpal_assistants_service.services.rate_limiter import RateLimiter
+from mlpal_assistants_service.services.reasoning_effort import default_effort, supported_levels
 
 router = APIRouter()
 
@@ -121,9 +122,16 @@ async def list_v2_models(api_key: CurrentAPIKey, model_router: ModelRouterDep) -
             except Exception:  # noqa: BLE001 — skip unresolvable tags in the listing
                 continue
 
+    # Key-scoped: same rule as /v1/models — a key with a model_policy only
+    # sees what it may use.
+    policy = getattr(api_key, "model_policy", None)
+    if policy:
+        candidates = [m for m in candidates if PolicyService.is_model_allowed(policy, m.model_tag)]
+
     out = []
     for m in candidates:
         caps = m.capabilities if isinstance(m.capabilities, dict) else {}
+        levels = list(supported_levels(caps))
         out.append({
             "id": m.model_tag,
             "display_name": m.display_name,
@@ -132,9 +140,13 @@ async def list_v2_models(api_key: CurrentAPIKey, model_router: ModelRouterDep) -
             "capabilities": {
                 "tools": bool(caps.get("tools", True)),
                 "vision": bool(caps.get("vision", True)),
-                "reasoning": m.provider in SERVED_PROVIDERS,
+                # A model reasons iff it exposes an effort lever (probe-verified
+                # per model in the catalog), not merely because its provider can.
+                "reasoning": bool(levels),
                 "caching": m.provider in SERVED_PROVIDERS,
             },
+            "effort_levels": levels,
+            "default_effort": default_effort(caps),
         })
     return JSONResponse({"data": out})
 

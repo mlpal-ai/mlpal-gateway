@@ -21,7 +21,9 @@ from mlpal_assistants_service.core.exceptions import (
     QuotaExceededError,
     RateLimitExceededError,
     UnsupportedCapabilityError,
+    UnsupportedEffortError,
     UnsupportedModelKwargsError,
+    ValidationError,
     http_status_for_provider_error,
 )
 from mlpal_assistants_service.schemas.chat import (
@@ -63,6 +65,7 @@ def _stream_chunk_to_data(chunk) -> dict:
                 "total_tokens": chunk.cost.tokens.total_tokens,
                 "cached_tokens": chunk.cost.tokens.cached_tokens,
                 "cache_write_tokens": chunk.cost.tokens.cache_write_tokens,
+                "reasoning_tokens": chunk.cost.tokens.reasoning_tokens,
             },
             "latency_ms": chunk.cost.latency_ms,
             "compute_units": chunk.cost.compute_units,
@@ -119,7 +122,7 @@ async def create_chat_completion(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=e.message,
         )
-    except UnsupportedModelKwargsError as e:
+    except (UnsupportedModelKwargsError, UnsupportedEffortError, ValidationError) as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=e.message,

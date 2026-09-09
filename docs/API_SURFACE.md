@@ -32,7 +32,7 @@ plane, because it evolves on its own cadence.
 |---|---|---|
 | **Native (Anthropic-wire)** | `POST /v1/messages` (+ `GET /v1/messages/models`, `POST /v1/messages/count_tokens`) | The canonical inference surface; what the MLPal SDK uses. Also a drop-in for Anthropic-SDK / Claude-Code users. |
 | **OpenAI-compat** | `POST /v1/chat/completions` (+ `/stream`), `/v1/embeddings`, `/v1/images/generations` (+ `GET /v1/images/jobs/{id}` for `wait:false`), `/v1/audio/*` | The zero-friction migration door — point an existing OpenAI SDK at this `base_url`. |
-| Curated catalog | `GET /v1/catalog`, `GET /v1/models` | Routable model attributes / tiers, filtered to the models this key can serve. |
+| Curated catalog | `GET /v1/catalog`, `GET /v1/models`, `GET /v1/messages/models` | Routable model attributes / tiers / effort levels, filtered to the models this key's `model_policy` allows (`/v1/models/{tag}` is 403 for a denied tag). |
 | Feedback | `POST /v1/feedback` | Outcome signal that refines curation. |
 | Account usage | `GET /v1/usage/summary`, `GET /v1/usage/daily` | This account's own usage. |
 | Connections (BYOK / BYOM) | `/v1/connections`, `/v1/connections/{id}/verify`, `/v1/connections/{id}/models` | Bring your own provider keys or an OpenAI-compatible endpoint; requests served on a connection bill zero CU. |

@@ -62,6 +62,10 @@ from mlpal_assistants_service.services.capture import (
 from mlpal_assistants_service.services.policy import PolicyService
 from mlpal_assistants_service.services.pricing import PricingService
 from mlpal_assistants_service.services.rate_limiter import RateLimiter
+from mlpal_assistants_service.services.reasoning_effort import (
+    check_no_native_conflict,
+    resolve_effort,
+)
 
 if TYPE_CHECKING:
     from mlpal_assistants_service.adapters.base import ToolDefinition
@@ -107,6 +111,7 @@ def _wire_token_usage(usage: AdapterTokenUsage, cached_included: bool) -> TokenU
         total_tokens=prompt + usage.output_tokens,
         cached_tokens=usage.cached_tokens,
         cache_write_tokens=writes,
+        reasoning_tokens=usage.reasoning_tokens,
     )
 
 
@@ -187,6 +192,7 @@ class ChatService:
         latency_ms: int,
         billing_needs_ensure: bool,
         cache_read_tokens: int = 0,
+        reasoning_effort: dict | None = None,
         sqs_client: Any | None = None,
         budgets: list | None = None,
         serving_backend: str | None = None,
@@ -237,6 +243,7 @@ class ChatService:
                                 if cache_read_tokens
                                 else {}
                             ),
+                            **({"reasoning_effort": reasoning_effort} if reasoning_effort else {}),
                             **(
                                 {
                                     "serving_credentials": conn_kind,
@@ -582,6 +589,11 @@ class ChatService:
             # Model-specific kwargs: validated against the SERVING adapter
             # (post byok/byom resolution) — rejected loudly, never dropped.
             adapter.validate_model_kwargs(request.model_kwargs)
+            check_no_native_conflict(request.reasoning_effort, request.model_kwargs)
+            effort = resolve_effort(
+                request.reasoning_effort, model_info.capabilities,
+                strict=request.reasoning_effort_strict, model=resolved_model_tag,
+            )
 
             async with breaker:
                 response = await adapter.chat(
@@ -596,6 +608,7 @@ class ChatService:
                     response_format=response_format,
                     mcp_servers=mcp_servers,
                     model_kwargs=request.model_kwargs,
+                    reasoning_effort=effort.applied,
                 )
 
             # 7. Calculate latency and compute units
@@ -638,6 +651,7 @@ class ChatService:
                     input_tokens=wire_usage.input_tokens,
                     output_tokens=wire_usage.output_tokens,
                     cache_read_tokens=wire_usage.cached_tokens,
+                    reasoning_effort=effort.as_metadata() if effort.requested else None,
                     compute_units=compute_units,
                     latency_ms=latency_ms,
                     billing_needs_ensure=not billing_existed,
@@ -682,6 +696,7 @@ class ChatService:
                 metadata={
                     "trace_id": trace_id,
                     "provider_model": provider_model_id,
+                    **({"reasoning_effort": effort.as_metadata()} if effort.requested else {}),
                     **({"serving_credentials": conn.kind} if conn is not None else {}),
                     **(
                         {"connection_usd_estimate": str(byom_usd)}
@@ -939,6 +954,11 @@ class ChatService:
 
             # 6. Execute streaming request with circuit breaker
             adapter.validate_model_kwargs(request.model_kwargs)
+            check_no_native_conflict(request.reasoning_effort, request.model_kwargs)
+            effort = resolve_effort(
+                request.reasoning_effort, model_info.capabilities,
+                strict=request.reasoning_effort_strict, model=resolved_model_tag,
+            )
 
             async with breaker:
                 async for chunk in adapter.chat_stream(
@@ -953,6 +973,7 @@ class ChatService:
                     response_format=response_format,
                     mcp_servers=mcp_servers,
                     model_kwargs=request.model_kwargs,
+                    reasoning_effort=effort.applied,
                 ):
                     if chunk.done:
                         if chunk.content:
@@ -1000,6 +1021,7 @@ class ChatService:
                                     input_tokens=wire_usage.input_tokens,
                                     output_tokens=wire_usage.output_tokens,
                                     cache_read_tokens=wire_usage.cached_tokens,
+                                    reasoning_effort=effort.as_metadata() if effort.requested else None,
                                     compute_units=compute_units,
                                     latency_ms=latency_ms,
                                     billing_needs_ensure=not billing_existed,

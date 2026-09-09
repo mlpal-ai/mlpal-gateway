@@ -32,6 +32,7 @@ callers can see the whole ladder, pin overrides, or build their own fallback.
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -83,15 +84,24 @@ def available_profiles() -> list[str]:
     return sorted((load_curated().get("profiles") or {}).keys())
 
 
+# Key-scoped view: a predicate over model tags (the key's model_policy).
+# None = unrestricted (dashboard/JWT callers).
+Allowed = Callable[[str], bool] | None
+
+
 def _blended(pricing: Any) -> Decimal:
     return (_INPUT_WEIGHT * pricing.input_rate + pricing.output_rate) / _TOTAL_WEIGHT
 
 
-async def _resolve_candidate(tag: str, router: Any, pricing_service: Any) -> dict[str, Any]:
+async def _resolve_candidate(
+    tag: str, router: Any, pricing_service: Any, allowed: Allowed = None
+) -> dict[str, Any]:
     """One ladder entry → availability + live cost/caps. Unavailable models
-    (unknown, inactive, paused, or unpriced) still appear with available=False
-    so callers see the full ladder."""
+    (unknown, inactive, paused, unpriced, or outside the caller's key policy)
+    still appear with available=False so callers see the full ladder."""
     entry: dict[str, Any] = {"model": tag, "available": False}
+    if allowed is not None and not allowed(tag):
+        return entry
     try:
         model = await router.get_model(tag)
         pricing = await pricing_service.get_pricing(tag, "chat")
@@ -241,6 +251,7 @@ async def build_model_attributes(
     pricing_service: Any,
     latency_stats: dict[str, dict] | None = None,
     feedback_quality: dict[str, dict] | None = None,
+    allowed: Allowed = None,
 ) -> dict[str, Any]:
     """Every served chat model with the attributes a caller can route on.
 
@@ -258,7 +269,8 @@ async def build_model_attributes(
 
     all_models = await router.list_models(operation="chat", include_deprecated=False)
     served = [m for m in all_models
-              if not getattr(m, "is_paused", False) and getattr(m, "is_active", True)]
+              if not getattr(m, "is_paused", False) and getattr(m, "is_active", True)
+              and (allowed is None or allowed(m.model_tag))]
     lineage = _served_lineage(curated.get("lineage") or {}, served)
 
     out: dict[str, Any] = {}
@@ -301,6 +313,7 @@ async def build_catalog(
     pricing_service: Any,
     latency_stats: dict[str, dict] | None = None,
     feedback_quality: dict[str, dict] | None = None,
+    allowed: Allowed = None,
 ) -> dict[str, Any] | None:
     """Assemble the served catalog for a profile, or None if unknown.
 
@@ -324,7 +337,7 @@ async def build_catalog(
     for tier in tier_names:
         spec = prof["tiers"][tier]
         ladder = [spec["model"], *spec.get("alternates", [])]
-        candidates = [await _resolve_candidate(tag, router, pricing_service) for tag in ladder]
+        candidates = [await _resolve_candidate(tag, router, pricing_service, allowed) for tag in ladder]
         resolved[tier] = {
             "spec": spec,
             "candidates": candidates,
@@ -390,8 +403,7 @@ async def build_catalog(
         }
 
     models = await build_model_attributes(
-        router, pricing_service, latency_stats, feedback_quality
-    )
+        router, pricing_service, latency_stats, feedback_quality, allowed=allowed)
     return {
         "schema": curated.get("schema", 1),
         "profile": profile,

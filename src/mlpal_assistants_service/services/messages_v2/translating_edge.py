@@ -34,6 +34,10 @@ from mlpal_assistants_service.services.messages_v2.translate_in import (
     to_common,
 )
 from mlpal_assistants_service.services.messages_v2.usage import CanonicalUsage
+from mlpal_assistants_service.services.reasoning_effort import (
+    check_no_native_conflict,
+    resolve_effort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -76,11 +80,15 @@ class TranslatingEdge:
                 )
                 for t in common.tools
             ]
-        # Reasoning effort is captured for observability; the adapter chat
-        # signature has no explicit effort knob yet (gpt-5.x / Gemini reason by
-        # default), so we record it rather than silently discard it.
-        if common.reasoning_effort:
-            ctx.cc_metadata["reasoning_effort"] = common.reasoning_effort
+        # Universal effort: explicit `output_config.effort` or the `thinking`
+        # budget band, resolved onto the rungs this model accepts (clamped,
+        # never silent — the resolution rides cc_metadata and a response header).
+        check_no_native_conflict(common.reasoning_effort, req.model_kwargs)
+        effort = resolve_effort(
+            common.reasoning_effort, ctx.capabilities, model=ctx.model_tag
+        )
+        if effort.requested:
+            ctx.cc_metadata["reasoning_effort"] = effort.as_metadata()
         # Model-specific kwargs: validated against the serving adapter —
         # rejected with a 400 listing the offenders, never silently dropped.
         self._adapter.validate_model_kwargs(req.model_kwargs)
@@ -93,6 +101,7 @@ class TranslatingEdge:
             "top_p": common.top_p,
             "stop": common.stop,
             "model_kwargs": req.model_kwargs,
+            "reasoning_effort": effort.applied,
         }
         if common.max_tokens is not None:
             kwargs["max_tokens"] = common.max_tokens

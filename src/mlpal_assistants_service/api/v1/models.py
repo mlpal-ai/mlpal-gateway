@@ -180,6 +180,7 @@ async def list_meta_models(
 async def get_model(
     model_tag: str,
     _user_id: CurrentUserFlexible,
+    model_policy: APIKeyModelPolicy,
     model_router: ModelRouterDep,
     pricing_service: PricingServiceDep,
 ) -> ModelDetailInfo:
@@ -190,6 +191,13 @@ async def get_model(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model '{model_tag}' not found",
+        )
+    # Key-scoped, consistent with the listing and with inference (403, not a
+    # fake 404: the model exists, this key may not use it).
+    if model_policy and not PolicyService.is_model_allowed(model_policy, model.model_tag):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Model '{model_tag}' is not permitted by this key's model_policy",
         )
 
     # Get pricing info - determine operation from capabilities

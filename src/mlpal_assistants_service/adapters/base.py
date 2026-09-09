@@ -307,6 +307,9 @@ class TokenUsage:
     # contains them follows the adapter's cached_tokens_included_in_input.
     cache_write_5m_tokens: int = 0
     cache_write_1h_tokens: int = 0
+    # Hidden reasoning/thinking tokens (subset of output_tokens). None = the
+    # provider does not report them separately (Anthropic).
+    reasoning_tokens: int | None = None
 
     def __post_init__(self) -> None:
         if self.total_tokens == 0:
@@ -1070,6 +1073,7 @@ class BaseAdapter(ABC):
         response_format: dict[str, Any] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AdapterResponse:
         """
         Execute a chat completion.
@@ -1117,6 +1121,7 @@ class BaseAdapter(ABC):
         mcp_servers: list[dict[str, Any]] | None = None,
         stream_thinking: bool = False,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """
         Execute a streaming chat completion.

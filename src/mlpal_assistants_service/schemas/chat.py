@@ -252,6 +252,22 @@ class ChatCompletionRequest(BaseSchema):
         default=None,
         description="MCP servers to connect to (pass-through to provider)",
     )
+    reasoning_effort: Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"] | None = Field(
+        default=None,
+        description=(
+            "Universal reasoning effort, one ordinal ladder for every provider "
+            "(none < minimal < low < medium < high < xhigh < max). Mapped to "
+            "OpenAI reasoning.effort / Anthropic output_config.effort / Gemini "
+            "thinking_level. A rung the model lacks is clamped to its nearest "
+            "supported rung and reported in metadata.reasoning_effort; omit to "
+            "use the model's default. Conflicts with a provider-native effort "
+            "in model_kwargs (400)."
+        ),
+    )
+    reasoning_effort_strict: bool = Field(
+        default=False,
+        description="Reject (400) instead of clamping when the model lacks the requested rung.",
+    )
 
 
 class TokenUsage(BaseSchema):
@@ -270,6 +286,13 @@ class TokenUsage(BaseSchema):
             "Input tokens written to the provider's prompt cache this request "
             "(subset of input_tokens; Anthropic models with cache_control). "
             "Billed at the provider's cache-write tier."
+        ),
+    )
+    reasoning_tokens: int | None = Field(
+        default=None,
+        description=(
+            "Hidden reasoning/thinking tokens (subset of output_tokens). null when "
+            "the provider does not report them separately (Anthropic)."
         ),
     )
 

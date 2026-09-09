@@ -366,6 +366,7 @@ class BedrockAdapter(BaseAdapter):
         response_format: dict[str, Any] | None = None,
         mcp_servers: list[dict[str, Any]] | None = None,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AdapterResponse:
         """Execute chat completion via Bedrock Converse API."""
         start_time = time.perf_counter()
@@ -532,6 +533,7 @@ class BedrockAdapter(BaseAdapter):
         mcp_servers: list[dict[str, Any]] | None = None,
         stream_thinking: bool = False,
         model_kwargs: dict[str, Any] | None = None,
+        reasoning_effort: str | None = None,
     ) -> AsyncIterator[StreamChunk]:
         """Execute streaming chat completion."""
         try:

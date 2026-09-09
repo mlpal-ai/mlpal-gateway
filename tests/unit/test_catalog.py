@@ -354,3 +354,32 @@ async def test_routing_decision_is_stable_across_stats_refresh():
     assert base["tiers"] == perturbed["tiers"]
     # ...while the models block DID move, proving the perturbation was real
     assert base["models"] != perturbed["models"]
+
+
+@pytest.mark.asyncio
+async def test_catalog_is_key_scoped_by_model_policy():
+    """A key whose model_policy excludes the max primary sees it as unavailable
+    (ladder falls to an allowed alternate) and absent from `models`."""
+    from mlpal_assistants_service.services.policy import PolicyService
+
+    policy = {"deny": ["gpt-6-astra", "claude-opus-*"]}
+    router, pricing = _mocks()
+    cat = await build_catalog(
+        "coding", router, pricing, allowed=lambda t: PolicyService.is_model_allowed(policy, t)
+    )
+    top = cat["tiers"]["max"]
+    assert top["served_alternate"] is True
+    assert top["model"] == "claude-fable-5"          # first ALLOWED alternate
+    alts = {a["model"]: a for a in top["alternates"]}
+    assert alts["gpt-6-astra"]["available"] is False
+    assert "gpt-6-astra" not in cat["models"] and "claude-opus-5" not in cat["models"]
+    assert "gpt-5.6-terra" in cat["models"] and "claude-fable-5" in cat["models"]
+    # a tier whose whole ladder is denied is surfaced loudly, not dropped
+    denied_all = {"deny": ["gpt-6-astra", "claude-*"]}
+    cat2 = await build_catalog(
+        "coding", router, pricing, allowed=lambda t: PolicyService.is_model_allowed(denied_all, t)
+    )
+    assert "error" in cat2["tiers"]["max"]
+    # unrestricted caller still sees everything
+    full = await build_catalog("coding", router, pricing)
+    assert "gpt-6-astra" in full["models"] and full["tiers"]["max"]["model"] == "gpt-6-astra"
