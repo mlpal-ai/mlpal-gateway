@@ -143,6 +143,21 @@ class PolicyService:
             return
         raise ModelAccessDeniedError(requested, "not in this key's allowed models")
 
+    @staticmethod
+    def is_routing_allowed(model_policy: dict | None, alias: str, resolved: str) -> bool:
+        """Listing-side mirror of check_model_access for a meta-model routing:
+        deny wins on either the alias or the resolved model; allow passes if
+        either is permitted (allowing `mlpal-lite` grants its routing)."""
+        if not model_policy:
+            return True
+        deny = model_policy.get("deny") or []
+        if any(fnmatch.fnmatchcase(t, p) for t in (alias, resolved) for p in deny):
+            return False
+        allow = model_policy.get("allow") or ["*"]
+        if "*" in allow:
+            return True
+        return any(fnmatch.fnmatchcase(t, p) for t in (alias, resolved) for p in allow)
+
     def filter_models(self, model_policy: dict | None, tags: list[str]) -> list[str]:
         """Subset of `tags` the key may use — for the model-list endpoint."""
         if not model_policy:

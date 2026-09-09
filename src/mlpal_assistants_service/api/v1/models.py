@@ -52,8 +52,11 @@ async def list_models(
         include_deprecated=include_deprecated,
     )
 
+    denied_by_policy = 0
     if model_policy:
-        models = [m for m in models if PolicyService.is_model_allowed(model_policy, m.model_tag)]
+        admitted = [m for m in models if PolicyService.is_model_allowed(model_policy, m.model_tag)]
+        denied_by_policy = len(models) - len(admitted)
+        models = admitted
 
     # Serving truth per model: which configured backend (if any) would take
     # the call. Cached in the factory — no I/O here. null lets the console
@@ -106,7 +109,10 @@ async def list_models(
                 )
             )
 
-    return ModelListResponse(models=out, total=len(out))
+    return ModelListResponse(
+        models=out, total=len(out),
+        denied_by_policy=denied_by_policy, model_policy=model_policy or None,
+    )
 
 
 # Meta model strategy descriptions
@@ -131,6 +137,7 @@ META_MODEL_STRATEGIES = {
 )
 async def list_meta_models(
     _user_id: CurrentUserFlexible,
+    model_policy: APIKeyModelPolicy,
     meta_routing_repo: MetaRoutingRepositoryDep,
 ) -> MetaModelListResponse:
     """
@@ -147,8 +154,16 @@ async def list_meta_models(
 
     meta_models = []
     for tag in sorted(meta_tags):
-        # Get all routings for this meta model
-        routings = await meta_routing_repo.get_all_routings_for_model(tag)
+        # Get all routings for this meta model — key-scoped: a routing is
+        # listed only if this key could actually take it (alias or resolved
+        # model allowed, neither denied); an alias with no admitted routing
+        # is not listed at all.
+        routings = [
+            r for r in await meta_routing_repo.get_all_routings_for_model(tag)
+            if PolicyService.is_routing_allowed(model_policy, tag, r.resolved_model_tag)
+        ]
+        if model_policy and not routings:
+            continue
 
         meta_models.append(
             MetaModelInfo(

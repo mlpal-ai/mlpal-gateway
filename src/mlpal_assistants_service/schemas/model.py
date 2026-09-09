@@ -50,6 +50,14 @@ class ModelListResponse(BaseSchema):
 
     models: list[ModelInfo] = Field(..., description="Available models")
     total: int = Field(..., description="Total number of models")
+    denied_by_policy: int = Field(
+        default=0,
+        description="Models hidden from this listing by the caller key's model_policy (0 when unrestricted)",
+    )
+    model_policy: dict | None = Field(
+        default=None,
+        description="The caller key's own model_policy (allow/deny globs), null when unrestricted",
+    )
 
 
 class ModelCapabilities(BaseSchema):

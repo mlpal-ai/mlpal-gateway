@@ -95,13 +95,15 @@ def _blended(pricing: Any) -> Decimal:
 
 async def _resolve_candidate(
     tag: str, router: Any, pricing_service: Any, allowed: Allowed = None
-) -> dict[str, Any]:
+) -> dict[str, Any] | None:
     """One ladder entry → availability + live cost/caps. Unavailable models
-    (unknown, inactive, paused, unpriced, or outside the caller's key policy)
-    still appear with available=False so callers see the full ladder."""
+    (unknown, inactive, paused, or unpriced) still appear with available=False
+    so callers see the full ladder. A model the caller's KEY may not use is
+    omitted entirely (None): a key-scoped listing must not name what the key
+    cannot reach."""
     entry: dict[str, Any] = {"model": tag, "available": False}
     if allowed is not None and not allowed(tag):
-        return entry
+        return None
     try:
         model = await router.get_model(tag)
         pricing = await pricing_service.get_pricing(tag, "chat")
@@ -337,7 +339,10 @@ async def build_catalog(
     for tier in tier_names:
         spec = prof["tiers"][tier]
         ladder = [spec["model"], *spec.get("alternates", [])]
-        candidates = [await _resolve_candidate(tag, router, pricing_service, allowed) for tag in ladder]
+        candidates = [
+            c for c in [await _resolve_candidate(tag, router, pricing_service, allowed) for tag in ladder]
+            if c is not None
+        ]
         resolved[tier] = {
             "spec": spec,
             "candidates": candidates,

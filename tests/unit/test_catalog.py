@@ -370,16 +370,18 @@ async def test_catalog_is_key_scoped_by_model_policy():
     top = cat["tiers"]["max"]
     assert top["served_alternate"] is True
     assert top["model"] == "claude-fable-5"          # first ALLOWED alternate
-    alts = {a["model"]: a for a in top["alternates"]}
-    assert alts["gpt-6-astra"]["available"] is False
+    # denied models are OMITTED from the ladder, not merely marked unavailable
+    assert "gpt-6-astra" not in {a["model"] for a in top["alternates"]}
     assert "gpt-6-astra" not in cat["models"] and "claude-opus-5" not in cat["models"]
+    assert "gpt-6-astra" not in cat["flagships"].values()
+    assert all("gpt-6-astra" != e["model"] for ranks in cat["benchmark_rankings"].values() for e in ranks)
     assert "gpt-5.6-terra" in cat["models"] and "claude-fable-5" in cat["models"]
     # a tier whose whole ladder is denied is surfaced loudly, not dropped
     denied_all = {"deny": ["gpt-6-astra", "claude-*"]}
     cat2 = await build_catalog(
         "coding", router, pricing, allowed=lambda t: PolicyService.is_model_allowed(denied_all, t)
     )
-    assert "error" in cat2["tiers"]["max"]
+    assert "error" in cat2["tiers"]["max"] and cat2["tiers"]["max"]["alternates"] == []
     # unrestricted caller still sees everything
     full = await build_catalog("coding", router, pricing)
     assert "gpt-6-astra" in full["models"] and full["tiers"]["max"]["model"] == "gpt-6-astra"

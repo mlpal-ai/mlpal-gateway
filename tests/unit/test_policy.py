@@ -340,3 +340,15 @@ async def test_app_handler_maps_policy_exceptions_to_403_and_402():
         req, BudgetExceededError(window="daily", unit="usd", limit=100, spent=100, reset_at=None)
     )
     assert r402.status_code == 402
+
+
+
+def test_is_routing_allowed_mirrors_check_model_access():
+    from mlpal_assistants_service.services.policy import PolicyService as P
+
+    assert P.is_routing_allowed(None, "mlpal", "claude-opus-5")
+    assert P.is_routing_allowed({"allow": ["mlpal"]}, "mlpal", "claude-opus-5")        # alias grants routing
+    assert P.is_routing_allowed({"allow": ["claude-*"]}, "mlpal", "claude-opus-5")     # resolved allowed
+    assert not P.is_routing_allowed({"allow": ["gpt-*"]}, "mlpal", "claude-opus-5")    # neither allowed
+    assert not P.is_routing_allowed({"allow": ["mlpal"], "deny": ["claude-opus-5"]}, "mlpal", "claude-opus-5")  # deny wins
+    assert not P.is_routing_allowed({"deny": ["mlpal*"]}, "mlpal-lite", "gpt-5.6-luna")
