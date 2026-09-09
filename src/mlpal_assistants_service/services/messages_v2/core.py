@@ -26,6 +26,8 @@ from mlpal_assistants_service.core.exceptions import (
     ModelNotAvailableError,
     ModelNotFoundError,
     RateLimitExceededError,
+    UnsupportedEffortError,
+    ValidationError,
 )
 from mlpal_assistants_service.core.metrics import get_metrics
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
@@ -33,8 +35,14 @@ from mlpal_assistants_service.services.messages_v2.anthropic_backend import get_
 from mlpal_assistants_service.services.messages_v2.anthropic_edge import AnthropicEdge
 from mlpal_assistants_service.services.messages_v2.edges import ProviderEdge, RequestContext
 from mlpal_assistants_service.services.messages_v2.errors import error_body
+from mlpal_assistants_service.services.messages_v2.reasoning import effort_from_thinking
 from mlpal_assistants_service.services.messages_v2.schemas import ValidatedRequest
+from mlpal_assistants_service.services.messages_v2.translate_in import explicit_effort
 from mlpal_assistants_service.services.messages_v2.translating_edge import TranslatingEdge
+from mlpal_assistants_service.services.reasoning_effort import (
+    check_no_native_conflict,
+    resolve_effort,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -323,6 +331,13 @@ class MessagesV2Core:
                 (byom[2].input_price_per_m, byom[2].output_price_per_m) if byom else None
             ),
         )
+        # Universal effort is resolved HERE, before any response object exists,
+        # so the never-silent header can be stamped on streams as well (the
+        # edges only consume ctx.cc_metadata["reasoning_effort"]).
+        try:
+            _resolve_request_effort(req, ctx)
+        except (ValidationError, UnsupportedEffortError) as e:
+            return Response(error_body(400, e.message), 400, media_type="application/json")
         try:
             if byom is not None:
                 edge = TranslatingEdge(byom[0], wire_model_id=byom[1])
@@ -342,7 +357,10 @@ class MessagesV2Core:
             return StreamingResponse(
                 self._stream_with_heartbeat(edge, req, ctx, t0),
                 media_type="text/event-stream",
-                headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+                headers={
+                    "Cache-Control": "no-cache", "Connection": "keep-alive",
+                    **_effort_headers(ctx),
+                },
             )
 
         result = await edge.invoke(req, ctx)
@@ -809,13 +827,29 @@ def _cu_headers(compute_units: Decimal) -> dict[str, str]:
     return {"X-MLPal-Compute-Units": str(compute_units)}
 
 
+def _resolve_request_effort(req: ValidatedRequest, ctx: RequestContext) -> None:
+    """Explicit `output_config.effort` (any ladder rung) or the `thinking`
+    budget band → resolved against the served model's rungs. Recorded on ctx
+    (never silent); the edges apply `applied`. `source` lets the native edge
+    leave a pure `thinking` budget alone (Anthropic handles budgets itself)."""
+    explicit = explicit_effort(req.body)
+    requested = explicit or effort_from_thinking(req.body.get("thinking"))
+    check_no_native_conflict(explicit, req.model_kwargs)
+    effort = resolve_effort(requested, ctx.capabilities, model=ctx.model_tag)
+    if effort.requested:
+        ctx.cc_metadata["reasoning_effort"] = {
+            **effort.as_metadata(), "source": "explicit" if explicit else "thinking",
+        }
+
+
 def _effort_headers(ctx: RequestContext) -> dict[str, str]:
     """Never-silent effort resolution on the translating edge (body stays pure
     Anthropic): `requested->applied`, e.g. `max->high` when clamped."""
     res = ctx.cc_metadata.get("reasoning_effort")
     if not isinstance(res, dict) or not res.get("requested"):
         return {}
-    return {"X-MLPal-Reasoning-Effort": f"{res['requested']}->{res.get('applied')}"}
+    applied = res.get("applied") or "unsupported"   # None = model has no lever; nothing was sent
+    return {"X-MLPal-Reasoning-Effort": f"{res['requested']}->{applied}"}
 
 
 def _conn_headers(ctx: RequestContext) -> dict[str, str]:

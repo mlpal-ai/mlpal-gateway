@@ -305,11 +305,11 @@ def to_common(body: dict[str, Any]) -> CommonRequest:
         temperature=body.get("temperature"),
         top_p=body.get("top_p"),
         stop=body.get("stop_sequences"),
-        reasoning_effort=_explicit_effort(body) or effort_from_thinking(body.get("thinking")),
+        reasoning_effort=explicit_effort(body) or effort_from_thinking(body.get("thinking")),
     )
 
 
-def _explicit_effort(body: dict[str, Any]) -> str | None:
+def explicit_effort(body: dict[str, Any]) -> str | None:
     """Anthropic-wire `output_config.effort` (low..max), taken verbatim as the
     universal rung; the edge resolves it per model. A `thinking` budget only
     matters when no explicit effort is given."""

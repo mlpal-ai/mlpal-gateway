@@ -83,12 +83,14 @@ class TranslatingEdge:
         # Universal effort: explicit `output_config.effort` or the `thinking`
         # budget band, resolved onto the rungs this model accepts (clamped,
         # never silent — the resolution rides cc_metadata and a response header).
-        check_no_native_conflict(common.reasoning_effort, req.model_kwargs)
-        effort = resolve_effort(
-            common.reasoning_effort, ctx.capabilities, model=ctx.model_tag
-        )
-        if effort.requested:
-            ctx.cc_metadata["reasoning_effort"] = effort.as_metadata()
+        if "reasoning_effort" not in ctx.cc_metadata:
+            check_no_native_conflict(common.reasoning_effort, req.model_kwargs)
+            effort = resolve_effort(
+                common.reasoning_effort, ctx.capabilities, model=ctx.model_tag
+            )
+            if effort.requested:
+                ctx.cc_metadata["reasoning_effort"] = effort.as_metadata()
+        applied_effort = (ctx.cc_metadata.get("reasoning_effort") or {}).get("applied")
         # Model-specific kwargs: validated against the serving adapter —
         # rejected with a 400 listing the offenders, never silently dropped.
         self._adapter.validate_model_kwargs(req.model_kwargs)
@@ -101,7 +103,7 @@ class TranslatingEdge:
             "top_p": common.top_p,
             "stop": common.stop,
             "model_kwargs": req.model_kwargs,
-            "reasoning_effort": effort.applied,
+            "reasoning_effort": applied_effort,
         }
         if common.max_tokens is not None:
             kwargs["max_tokens"] = common.max_tokens

@@ -157,3 +157,71 @@ def test_anthropic_usage_surfaces_thinking_tokens_when_reported():
     without = SimpleNamespace(input_tokens=1, output_tokens=50, cache_read_input_tokens=0, cache_creation=None,
                               cache_creation_input_tokens=0)
     assert AnthropicAdapter._token_usage(without).reasoning_tokens is None
+
+
+# --- Anthropic wire (v2 core + native edge) ----------------------------------
+
+def _ctx(caps, **meta):
+    from mlpal_assistants_service.services.messages_v2.edges import RequestContext
+
+    ctx = RequestContext(model_tag="m", provider="anthropic", provider_model_id="m", backend="first_party",
+                         trace_id="t", api_key=None, headers={}, capabilities=caps)
+    ctx.cc_metadata.update(meta)
+    return ctx
+
+
+def test_core_resolves_effort_before_response_and_records_source():
+    from mlpal_assistants_service.services.messages_v2.core import (
+        _effort_headers,
+        _resolve_request_effort,
+    )
+    from mlpal_assistants_service.services.messages_v2.schemas import ValidatedRequest
+
+    def req(body):
+        return ValidatedRequest(raw_body=b"", body=body, model="m", stream=True)
+
+    ctx = _ctx(GEMINI38)
+    _resolve_request_effort(req({"output_config": {"effort": "max"}}), ctx)
+    assert ctx.cc_metadata["reasoning_effort"] == {"requested": "max", "applied": "high", "clamped": True, "source": "explicit"}
+    assert _effort_headers(ctx) == {"X-MLPal-Reasoning-Effort": "max->high"}
+    ctx = _ctx(ASTRA)
+    _resolve_request_effort(req({"thinking": {"type": "enabled", "budget_tokens": 20000}}), ctx)
+    assert ctx.cc_metadata["reasoning_effort"]["source"] == "thinking"
+    ctx = _ctx(ASTRA)
+    _resolve_request_effort(req({}), ctx)
+    assert "reasoning_effort" not in ctx.cc_metadata and _effort_headers(ctx) == {}
+    with pytest.raises(ValidationError):
+        _resolve_request_effort(ValidatedRequest(raw_body=b"", body={"output_config": {"effort": "high"}}, model="m",
+                                                 stream=False, model_kwargs={"output_config": {"effort": "low"}}), _ctx(ASTRA))
+
+
+def test_native_edge_rewrites_only_explicit_out_of_vocabulary_effort():
+    from mlpal_assistants_service.services.messages_v2.anthropic_edge import _apply_resolved_effort
+
+    # none on a model that accepts it → thinking disabled, effort dropped
+    body = {"output_config": {"effort": "none"}}
+    _apply_resolved_effort(body, _ctx(OPUS46, reasoning_effort={"requested": "none", "applied": "none", "clamped": False, "source": "explicit"}))
+    assert body == {"thinking": {"type": "disabled"}}
+    # clamped rung → applied rung, other output_config keys kept
+    body = {"output_config": {"effort": "xhigh", "format": "json"}}
+    _apply_resolved_effort(body, _ctx(OPUS46, reasoning_effort={"requested": "xhigh", "applied": "high", "clamped": True, "source": "explicit"}))
+    assert body["output_config"] == {"effort": "high", "format": "json"}
+    # no lever → field dropped instead of a provider 400
+    body = {"output_config": {"effort": "high"}}
+    _apply_resolved_effort(body, _ctx(NO_LEVER, reasoning_effort={"requested": "high", "applied": None, "clamped": True, "source": "explicit"}))
+    assert "output_config" not in body
+    # a pure thinking budget is left to Anthropic
+    body = {"thinking": {"type": "enabled", "budget_tokens": 20000}}
+    _apply_resolved_effort(body, _ctx(OPUS46, reasoning_effort={"requested": "high", "applied": "high", "clamped": False, "source": "thinking"}))
+    assert body == {"thinking": {"type": "enabled", "budget_tokens": 20000}}
+
+
+def test_native_edge_stream_error_payload_keeps_anthropic_shape():
+    import json
+
+    from mlpal_assistants_service.services.messages_v2.anthropic_edge import _as_stream_error
+
+    anthropic = b'{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}'
+    assert _as_stream_error(anthropic, 400) == anthropic
+    wrapped = json.loads(_as_stream_error(b"<html>502</html>", 502))
+    assert wrapped["type"] == "error" and "502" in json.dumps(wrapped)

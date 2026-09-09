@@ -29,6 +29,7 @@ from mlpal_assistants_service.services.messages_v2.anthropic_backend import (
     AnthropicFirstPartyBackend,
 )
 from mlpal_assistants_service.services.messages_v2.edges import EdgeResult, RequestContext
+from mlpal_assistants_service.services.messages_v2.errors import error_body
 from mlpal_assistants_service.services.messages_v2.schemas import ValidatedRequest
 from mlpal_assistants_service.services.messages_v2.usage import CanonicalUsage
 
@@ -58,6 +59,44 @@ def _shared_client() -> httpx.AsyncClient:
     return client
 
 
+def _as_stream_error(raw: bytes, status_code: int) -> bytes:
+    """Provider error body → the SSE `error` event payload. Anthropic's own
+    errors are already `{"type":"error","error":{...}}`; anything else is
+    wrapped so the client always sees that shape."""
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict) and parsed.get("type") == "error":
+            return raw
+    except ValueError:
+        pass
+    return error_body(status_code, raw.decode("utf-8", "replace")[:500])
+
+
+def _apply_resolved_effort(body: dict[str, Any], ctx: RequestContext) -> None:
+    """Native wire: the body is Anthropic-shaped already, so only an EXPLICIT
+    `output_config.effort` outside Anthropic's own vocabulary needs rewriting
+    (a pure `thinking` budget is left to Anthropic). `none` → thinking
+    disabled (the resolver only yields it for models that accept it); a
+    clamped rung → the applied rung; no lever → the field is dropped rather
+    than bounced by the provider."""
+    res = ctx.cc_metadata.get("reasoning_effort")
+    if not res or res.get("source") != "explicit":
+        return
+    oc = dict(body.get("output_config") or {})
+    applied = res.get("applied")
+    if applied == "none":
+        oc.pop("effort", None)
+        body["thinking"] = {"type": "disabled"}
+    elif applied is None:
+        oc.pop("effort", None)
+    else:
+        oc["effort"] = applied
+    if oc:
+        body["output_config"] = oc
+    else:
+        body.pop("output_config", None)
+
+
 class AnthropicEdge:
     def __init__(
         self,
@@ -74,6 +113,7 @@ class AnthropicEdge:
         # adaptation + auth headers (SigV4 backends sign the exact bytes).
         body = dict(req.body)
         body["model"] = ctx.provider_model_id
+        _apply_resolved_effort(body, ctx)
         if req.model_kwargs:
             # Native wire: the whole body is provider-native already, so
             # kwargs merge top-level; Anthropic validates unknown fields
@@ -110,6 +150,14 @@ class AnthropicEdge:
             timeout=self._timeout,
         ) as resp:
             status_code = resp.status_code
+            if status_code != 200:
+                # The provider refused the request (a JSON error, not SSE). Our
+                # 200 + SSE headers are already on the wire, so surface it as an
+                # Anthropic-shaped `error` event instead of a bare JSON body.
+                raw = await resp.aread()
+                yield b"event: error\ndata: " + _as_stream_error(raw, status_code) + b"\n\n"
+                ctx.report(None, status_code, None)
+                return
             # aiter_bytes (not aiter_raw): decode the transport Content-
             # Encoding (Anthropic gzips the SSE stream) so the client gets
             # plain SSE. Still event-faithful — we never parse/reserialize
