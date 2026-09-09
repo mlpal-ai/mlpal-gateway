@@ -129,7 +129,7 @@ def _apply_thinking_output_reserve(
 # title carry nothing for function calling — dropped explicitly.
 _GEMINI_API_REJECTED_KEYS = frozenset({"additionalProperties", "additional_properties", "$schema", "title"})
 _GEMINI_SCHEMA_KEYS: frozenset[str] = frozenset(
-    {name for name in types.Schema.model_fields}
+    set(types.Schema.model_fields)
     | {f.alias for f in types.Schema.model_fields.values() if f.alias}
 ) - _GEMINI_API_REJECTED_KEYS
 # draft-6+ exclusive bounds → the inclusive keywords Gemini knows. The strict
