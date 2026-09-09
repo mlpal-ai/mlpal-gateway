@@ -225,3 +225,28 @@ def test_native_edge_stream_error_payload_keeps_anthropic_shape():
     assert _as_stream_error(anthropic, 400) == anthropic
     wrapped = json.loads(_as_stream_error(b"<html>502</html>", 502))
     assert wrapped["type"] == "error" and "502" in json.dumps(wrapped)
+
+
+
+def test_gemini_tool_schema_sanitizer_folds_exclusive_bounds_and_drops_unknown_keywords():
+    from google.genai import types
+
+    from mlpal_assistants_service.adapters.google import sanitize_tool_schema
+
+    gmail_like = {
+        "$schema": "http://json-schema.org/draft-07/schema#", "type": "object", "title": "Args",
+        "additionalProperties": False,
+        "properties": {
+            "id": {"type": "integer", "exclusiveMinimum": 0, "examples": [1]},
+            "limit": {"type": "integer", "exclusiveMaximum": 100, "maximum": 50},
+            "ref": {"$ref": "#/$defs/Q"},
+        },
+        "required": ["id"],
+        "$defs": {"Q": {"type": "string", "pattern": "^q"}},
+    }
+    out = sanitize_tool_schema(gmail_like)
+    assert out["properties"]["id"] == {"type": "integer", "minimum": 0}
+    assert out["properties"]["limit"] == {"type": "integer", "maximum": 50}   # explicit inclusive bound wins
+    assert out["properties"]["ref"] == {"type": "string", "pattern": "^q"}
+    assert "additionalProperties" not in out and "$schema" not in out and "title" not in out
+    types.FunctionDeclaration(name="f", description="d", parameters=out)   # the SDK accepts it

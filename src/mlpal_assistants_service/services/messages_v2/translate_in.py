@@ -216,32 +216,13 @@ def _translate_message(
 # rejects with INVALID_ARGUMENT. Standard JSON-Schema tool definitions include
 # these, so we strip them for the Google edge only (OpenAI/Anthropic accept the
 # schema as-is).
-_GOOGLE_UNSUPPORTED_SCHEMA_KEYS = frozenset({"additionalProperties", "$schema", "title"})
-
-
 def sanitize_google_tool_schema(schema: Any) -> Any:
-    """Recursively strip schema keys Google rejects and inline $defs/$ref so a
-    standard JSON-Schema tool `input_schema` is accepted by Gemini's
-    function_declarations. Scoped to the Google edge; OpenAI/Anthropic get the
-    schema untouched."""
-    defs = schema.get("$defs") or schema.get("definitions") or {} if isinstance(schema, dict) else {}
+    """Gemini tool-schema sanitization (inline $ref, fold exclusive bounds,
+    drop keywords the SDK rejects). The adapter owns it so the OpenAI wire
+    gets the same treatment; kept here by name for the translating edge."""
+    from mlpal_assistants_service.adapters.google import sanitize_tool_schema
 
-    def walk(obj: Any) -> Any:
-        if isinstance(obj, dict):
-            if "$ref" in obj:
-                ref = obj["$ref"]
-                if isinstance(ref, str) and ref.rsplit("/", 1)[-1] in defs:
-                    return walk(defs[ref.rsplit("/", 1)[-1]])
-            return {
-                k: walk(v)
-                for k, v in obj.items()
-                if k not in _GOOGLE_UNSUPPORTED_SCHEMA_KEYS and k not in ("$defs", "definitions")
-            }
-        if isinstance(obj, list):
-            return [walk(item) for item in obj]
-        return obj
-
-    return walk(schema)
+    return sanitize_tool_schema(schema)
 
 
 def _tool_choice(tc: Any) -> str | dict | None:

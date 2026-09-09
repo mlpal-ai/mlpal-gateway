@@ -121,6 +121,54 @@ def _apply_thinking_output_reserve(
     )
 
 
+# JSON-Schema keywords Gemini's function_declarations accept: exactly the
+# fields of the SDK's Schema model (camelCase wire names + snake_case), derived
+# at import so a newer SDK that learns a keyword stops us dropping it.
+# The SDK model is broader than the API: the API itself rejects
+# additionalProperties ("Unknown name additional_properties"), and $schema /
+# title carry nothing for function calling — dropped explicitly.
+_GEMINI_API_REJECTED_KEYS = frozenset({"additionalProperties", "additional_properties", "$schema", "title"})
+_GEMINI_SCHEMA_KEYS: frozenset[str] = frozenset(
+    {name for name in types.Schema.model_fields}
+    | {f.alias for f in types.Schema.model_fields.values() if f.alias}
+) - _GEMINI_API_REJECTED_KEYS
+# draft-6+ exclusive bounds → the inclusive keywords Gemini knows. The strict
+# edge is lost (a bound of 0 becomes "≥ 0"), which is far better than the SDK
+# rejecting the whole tool set ("Extra inputs are not permitted").
+_EXCLUSIVE_BOUND_FOLD = {"exclusiveMinimum": "minimum", "exclusiveMaximum": "maximum"}
+
+
+def sanitize_tool_schema(schema: Any) -> Any:
+    """Make a standard JSON-Schema tool parameter block acceptable to Gemini:
+    inline $defs/$ref, fold exclusiveMinimum/Maximum into minimum/maximum, and
+    drop every keyword the SDK's Schema model does not accept
+    (additionalProperties, $schema, title, examples, ...). Google-only;
+    OpenAI/Anthropic get schemas untouched."""
+    defs = schema.get("$defs") or schema.get("definitions") or {} if isinstance(schema, dict) else {}
+
+    def walk(obj: Any) -> Any:
+        if isinstance(obj, dict):
+            if "$ref" in obj:
+                ref = obj["$ref"]
+                if isinstance(ref, str) and ref.rsplit("/", 1)[-1] in defs:
+                    return walk(defs[ref.rsplit("/", 1)[-1]])
+            out: dict[str, Any] = {}
+            for k, v in obj.items():
+                if k in _EXCLUSIVE_BOUND_FOLD:
+                    out.setdefault(_EXCLUSIVE_BOUND_FOLD[k], v)
+                elif k == "properties" and isinstance(v, dict):
+                    # name → schema map: the NAMES are user data, not keywords
+                    out[k] = {name: walk(sub) for name, sub in v.items()}
+                elif k in _GEMINI_SCHEMA_KEYS and k not in ("$defs", "definitions"):
+                    out[k] = walk(v)
+            return out
+        if isinstance(obj, list):
+            return [walk(item) for item in obj]
+        return obj
+
+    return walk(schema)
+
+
 def _gemini_thought_tokens(usage_metadata: Any) -> int:
     """Thinking tokens. Google reports them OUTSIDE candidates_token_count and
     bills them as output — they must be added, not ignored."""
@@ -1271,7 +1319,7 @@ class GoogleAdapter(BaseAdapter):
             function_declarations.append({
                 "name": tool.name,
                 "description": tool.description,
-                "parameters": tool.parameters,
+                "parameters": sanitize_tool_schema(tool.parameters),
             })
 
         return [{"function_declarations": function_declarations}]
