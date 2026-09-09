@@ -49,7 +49,24 @@ logger = logging.getLogger(__name__)
 def _is_reasoning_model(model: str) -> bool:
     """OpenAI reasoning models (gpt-5.x and the o-series). Only these accept the
     Responses API `reasoning` param, so we gate reasoning-summary streaming on it."""
-    return model.startswith(("gpt-5", "o1", "o3", "o4"))
+    return model.startswith(("gpt-5", "gpt-6", "o1", "o3", "o4"))
+
+
+def _cache_write_tokens(usage: Any) -> int:
+    """Prompt-cache WRITE tokens from a Responses usage object. OpenAI started
+    reporting (and charging 1.25x for) cache writes on the gpt-5.6 / gpt-6
+    generation — verified live 2026-09-07 on sol and astra. Absent → 0."""
+    details = getattr(usage, "input_tokens_details", None) if usage else None
+    return int(getattr(details, "cache_write_tokens", 0) or 0)
+
+
+def _completions_cache_tokens(usage: Any) -> tuple[int, int]:
+    """(cached, written) from a Chat Completions usage.prompt_tokens_details."""
+    details = getattr(usage, "prompt_tokens_details", None) if usage else None
+    return (
+        int(getattr(details, "cached_tokens", 0) or 0),
+        int(getattr(details, "cache_write_tokens", 0) or 0),
+    )
 
 
 def _cached_tokens(usage: Any) -> int:
@@ -148,6 +165,19 @@ class OpenAIAdapter(BaseAdapter):
             max_output_tokens=16384,
         ),
         # GPT-5 family
+        # GPT-6 Astra (2026-09-03): 1.05M context, 128K output; tools,
+        # structured output, streaming, image input probe-verified 2026-09-07.
+        "gpt-6": ModelCapabilities(
+            supports_images=True,
+            supports_pdf=True,
+            supports_audio=False,
+            supports_video=False,
+            supports_tools=True,
+            supports_structured_output=True,
+            supports_mcp=True,
+            max_context_tokens=1050000,
+            max_output_tokens=128000,
+        ),
         "gpt-5": ModelCapabilities(
             supports_images=True,
             supports_pdf=True,
@@ -609,6 +639,7 @@ class OpenAIAdapter(BaseAdapter):
                 input_tokens=response.usage.input_tokens if response.usage else 0,
                 output_tokens=response.usage.output_tokens if response.usage else 0,
                 cached_tokens=_cached_tokens(response.usage),
+                cache_write_5m_tokens=_cache_write_tokens(response.usage),
             )
 
             # Derive finish reason
@@ -805,6 +836,7 @@ class OpenAIAdapter(BaseAdapter):
                         input_tokens=resp.usage.input_tokens if resp.usage else 0,
                         output_tokens=resp.usage.output_tokens if resp.usage else 0,
                         cached_tokens=_cached_tokens(resp.usage),
+                        cache_write_5m_tokens=_cache_write_tokens(resp.usage),
                     )
                     yield StreamChunk(
                         content="",
@@ -938,6 +970,8 @@ class OpenAIAdapter(BaseAdapter):
             usage=TokenUsage(
                 input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
                 output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                cached_tokens=_completions_cache_tokens(usage)[0],
+                cache_write_5m_tokens=_completions_cache_tokens(usage)[1],
             ),
             finish_reason=choice.finish_reason or "stop",
             latency_ms=int((time.perf_counter() - start_time) * 1000),
@@ -999,6 +1033,8 @@ class OpenAIAdapter(BaseAdapter):
             usage=TokenUsage(
                 input_tokens=getattr(final_usage, "prompt_tokens", 0) or 0,
                 output_tokens=getattr(final_usage, "completion_tokens", 0) or 0,
+                cached_tokens=_completions_cache_tokens(final_usage)[0],
+                cache_write_5m_tokens=_completions_cache_tokens(final_usage)[1],
             ),
         )
 
@@ -1478,6 +1514,9 @@ class OpenAIAdapter(BaseAdapter):
         # GPT-5.6 family (Sol/Terra/Luna) rejects `temperature` outright,
         # verified against the live API.
         "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+        # GPT-6 Astra: `temperature` rejected ("not supported with this
+        # model"), verified live 2026-09-07.
+        "gpt-6-astra",
     )
 
     def _model_skips_sampling_params(self, model: str) -> bool:

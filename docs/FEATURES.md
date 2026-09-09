@@ -1,7 +1,7 @@
 # MLPal Gateway — Master Feature List
 
 One codebase, two deployments. ✅ = present · ⚙️ = present, different default/backing · — = absent by design.
-Updated 2026-09-04.
+Updated 2026-09-08.
 
 ## Inference surfaces
 
@@ -24,7 +24,7 @@ Updated 2026-09-04.
 
 | Feature | Managed | Self-hosted |
 |---|---|---|
-| Curated registry (82 models: OpenAI, Anthropic, Google, Bedrock open-weights; deprecations carry a successor + shutdown date) | ✅ | ✅ same feed |
+| Curated registry (83 models incl. GPT-6 Astra: OpenAI, Anthropic, Google, Bedrock open-weights; deprecations carry a successor + shutdown date) | ✅ | ✅ same feed |
 | Declarative catalog feed + reconcile (insert / update / **soft-retire**, provenance) | manual/CI run | ✅ every boot |
 | Effective-dated pass-through pricing (markup 1.00, 1 CU = $10) | ✅ | ✅ |
 | **Serving backends**: the same model served via first-party API, Bedrock, Vertex, or Azure Foundry in priority order (`MLPAL_<FAMILY>_BACKENDS`); third-party adapters via pip entry point | ✅ | ✅ |
@@ -54,7 +54,7 @@ Updated 2026-09-04.
 | Feature | Managed | Self-hosted |
 |---|---|---|
 | Pass-through CU metering (single figure, no markup, no meter) | ✅ | ✅ |
-| **Cache-aware metering reproduces list price exactly**: cache reads at the provider's tier (per-model `cache_read_rate`, e.g. Claude Fable 5.1 $0.25/MTok; else 0.10× OpenAI/Anthropic, 0.25× Gemini), Anthropic cache writes at 1.25× (5m) / 2× (1h); one usage convention on the OpenAI wire (`input_tokens` = whole prompt, `cached_tokens` + `cache_write_tokens` subsets) | ✅ | ✅ |
+| **Cache-aware metering reproduces list price exactly**: cache reads at the provider's tier (per-model `cache_read_rate`, e.g. Claude Fable 5.1 $0.25/MTok; else 0.10× OpenAI/Anthropic, 0.25× Gemini), Anthropic cache writes at 1.25× (5m) / 2× (1h), OpenAI cache writes at 1.25× (gpt-5.6/gpt-6 generation); one usage convention on the OpenAI wire (`input_tokens` = whole prompt, `cached_tokens` + `cache_write_tokens` subsets) | ✅ | ✅ |
 | `usage_logs` per request: tokens, CU, latency, status, error, surface tag | ✅ | ✅ |
 | `GET /v1/usage/summary` + daily buckets | ✅ | ✅ |
 | Wallet debits (payments service) + debit-retry worker + billing gate | ✅ | — (local gate: allow-all, no callouts; spend control = per-key budgets) |

@@ -71,16 +71,20 @@ class CanonicalUsage:
     def from_openai(cls, usage: Any) -> CanonicalUsage:
         """Build canonical usage from an adapter ``TokenUsage`` (OpenAI/Google).
 
-        ``input_tokens`` from these providers already includes the cached prefix
-        (``cached_tokens`` is a subset); ``raw`` is left None to force the flat
-        CU path, which bills the cached portion at the provider's cache-read
-        rate and the remainder at the input rate (matching v1 billing).
+        ``input_tokens`` from these providers already includes the cached and
+        written prefixes (``cached_tokens`` / cache writes are subsets); ``raw``
+        is left None to force the flat CU path, which bills the cached portion
+        at the provider's cache-read rate, writes at the standard 1.25x write
+        tier, and the remainder at the input rate (matching v1 billing).
         """
+        writes = int(getattr(usage, "cache_write_5m_tokens", 0) or 0) + int(
+            getattr(usage, "cache_write_1h_tokens", 0) or 0
+        )
         return cls(
             input=int(getattr(usage, "input_tokens", 0) or 0),
             output=int(getattr(usage, "output_tokens", 0) or 0),
             cache_read=int(getattr(usage, "cached_tokens", 0) or 0),
-            cache_write=0,
+            cache_write=writes,
             raw=None,
         )
 
@@ -99,17 +103,22 @@ class CanonicalUsage:
                 self.raw, input_cu_per_token, output_cu_per_token,
                 cache_read_cu_per_token,
             )
-        # Flat path = from_openai semantics: `input` INCLUDES the cached
-        # subset. Bill the uncached portion at the input rate and the cached
-        # portion at the provider's cache-read rate.
+        # Flat path = from_openai semantics: `input` INCLUDES the cached and
+        # written subsets. Bill the plain remainder at the input rate, the
+        # cached portion at the provider's cache-read rate, and writes at the
+        # standard 1.25x write tier (OpenAI charges it since gpt-5.6/gpt-6).
+        from mlpal_assistants_service.core.config import get_settings
+
         cached = min(Decimal(self.cache_read), Decimal(self.input))
+        written = min(Decimal(self.cache_write), Decimal(self.input) - cached)
         cache_rate = (
             cache_read_cu_per_token
             if cache_read_cu_per_token is not None
             else input_cu_per_token
         )
         return (
-            (Decimal(self.input) - cached) * input_cu_per_token
+            (Decimal(self.input) - cached - written) * input_cu_per_token
             + cached * cache_rate
+            + written * input_cu_per_token * get_settings().cache_5m_write_multiplier
             + Decimal(self.output) * output_cu_per_token
         )

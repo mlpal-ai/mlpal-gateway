@@ -755,6 +755,19 @@
     "output_cu_rate": "0.36000000"
   },
   {
+    "model_tag": "gpt-6-astra",
+    "operation": "chat",
+    "tier": "premium",
+    "input_rate": "10.00000000",
+    "output_rate": "50.00000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-09-07",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "3.00000000",
+    "output_cu_rate": "15.00000000"
+  },
+  {
     "model_tag": "gpt-5.6-sol",
     "operation": "chat",
     "tier": "premium",

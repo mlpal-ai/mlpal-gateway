@@ -20,7 +20,8 @@ RATES = {
     "claude-fable-5": ("anthropic", "10", "50"),      # blended 20.000
     "claude-opus-5": ("anthropic", "5", "25"),        # blended 10.000
     "claude-opus-4-8": ("anthropic", "5", "25"),      # blended 10.000
-    "gpt-5.6-sol": ("openai", "5", "30"),             # blended 11.250
+    "gpt-5.6-sol": ("openai", "5", "30"),
+    "gpt-6-astra": ("openai", "10", "50"),             # blended 11.250
     "gpt-5.6-terra": ("openai", "2.50", "15"),        # blended  5.625
     "claude-sonnet-5": ("anthropic", "3", "15"),      # blended  6.000
     "gpt-5.5": ("openai", "2.50", "15"),
@@ -80,7 +81,7 @@ async def test_catalog_happy_path_rel_cost_and_alternates():
     t = cat["tiers"]
     # 4 tiers in curation order, primaries served
     assert list(t.keys()) == ["max", "frontier", "mid", "cheap"]
-    assert t["max"]["model"] == "claude-fable-5" and not t["max"]["served_alternate"]
+    assert t["max"]["model"] == "gpt-6-astra" and not t["max"]["served_alternate"]
     assert t["frontier"]["model"] == "claude-opus-5"
     assert t["mid"]["model"] == "gpt-5.6-terra"
     assert t["cheap"]["model"] == "gpt-5.6-luna"
@@ -100,13 +101,15 @@ async def test_catalog_happy_path_rel_cost_and_alternates():
 
 @pytest.mark.asyncio
 async def test_catalog_tier_failover_marks_alternate_and_lists_primary():
-    router, pricing = _mocks(unavailable={"claude-fable-5"})  # e.g. provider suspension
+    # e.g. provider suspensions: primary AND first alternate dark
+    router, pricing = _mocks(unavailable={"gpt-6-astra", "claude-fable-5"})
     cat = await build_catalog("coding", router, pricing)
     top = cat["tiers"]["max"]
-    assert top["model"] == "claude-opus-5"         # first alternate served
+    assert top["model"] == "claude-opus-5"         # second alternate served
     assert top["served_alternate"] is True
     # the dark primary still appears in the ladder, flagged unavailable
     alts = {a["model"]: a for a in top["alternates"]}
+    assert alts["gpt-6-astra"]["available"] is False
     assert alts["claude-fable-5"]["available"] is False
     # normalization follows the served top model (opus blended 10)
     assert top["rel_cost"] == 100
@@ -199,7 +202,7 @@ async def test_lineage_and_flagship_resolution():
     assert opus48["tier"] == "opus" and opus48["tier_rank"] == 2 and opus48["latest_in_tier"] is False
     # flagships: OpenAI -> newest gen's rank-1; Google -> pro (older gen) NOT flash;
     # Anthropic -> fable (rank 1, above the opus tier) even though opus-5 exists
-    assert cat["flagships"]["openai"] == "gpt-5.6-sol"
+    assert cat["flagships"]["openai"] == "gpt-6-astra"   # gen 6.0 rank-1 supersedes sol
     assert cat["flagships"]["google"] == "gemini-3.1-pro-preview"
     assert cat["flagships"]["anthropic"] == "claude-fable-5"
 

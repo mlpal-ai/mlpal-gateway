@@ -1,6 +1,6 @@
 {
   "schema": 3,
-  "updated": "2026-07-28",
+  "updated": "2026-09-07",
   "_note": "Declared, deterministic curation only. Objective axes (cost, context, caps, throughput) merge live and are never here. THREE declared blocks: (1) `lineage` = (provider, generation, tier, tier_rank) — structural, stable, placed once per model; powers deterministic 'provider best' resolution and same-tier version ordering. tier_rank is 1=flagship WITHIN a provider (not cross-provider). (2) `cards` = the deterministic model card: a short `summary` + published `benchmarks` (sourced + dated). The card is NEVER mutated by feedback. (3) MEASURED quality (the feedback loop, see model_feedback) is served ORTHOGONALLY as `measured`, alongside — never merged into — the card. A model absent here is still fully routable on the objective axes.",
 
   "lineage": {
@@ -19,6 +19,7 @@
     "claude-haiku-4-5-20251001":   {"generation": 4.5, "tier": "haiku",  "tier_rank": 4},
     "claude-3-5-haiku-20241022":   {"generation": 3.5, "tier": "haiku",  "tier_rank": 4},
 
+    "gpt-6-astra":                 {"generation": 6.0, "tier": "astra",  "tier_rank": 1},
     "gpt-5.6-sol":                 {"generation": 5.6, "tier": "sol",    "tier_rank": 1},
     "gpt-5.6-terra":               {"generation": 5.6, "tier": "terra",  "tier_rank": 2},
     "gpt-5.6-luna":                {"generation": 5.6, "tier": "luna",   "tier_rank": 3},
@@ -76,6 +77,9 @@
     "claude-haiku-4-5-20251001": {
       "summary": "Anthropic's fast, low-cost tier — extraction, classification and quick edits."
     },
+    "gpt-6-astra": {
+      "summary": "OpenAI GPT-6 Astra — frontier generation (2026-09-03). OpenAI launch-post table: Terminal-Bench 4.0 57.9 (Fable 5.1 55.8, Opus 5 52.6, Sol 37.3), DeepSWE v1.1 74.1 (Opus 5 73.7, Sol 72.7), GPQA Diamond 96.0, FrontierMath Tier 4 (v2) 97.6, MRCR v2 8-needle 512K-1M 96.3. 1.05M context, 128K output; reasoning effort low/medium/high/xhigh/max (no 'none'); rejects temperature. $10/$50, cache read $1.00, cache write $12.50 (1.25x). (No SWE-bench Verified figure published.)"
+    },
     "gpt-5.6-sol": {
       "summary": "OpenAI GPT-5.6 flagship (Sol) — SOTA on Terminal-Bench 2.1 (88.8; 91.9 Ultra) and DeepSWE for terminal/tool-heavy agent coding; very fast (~750 tok/s), token-efficient. 1.05M context. Frontier alternate: preferred over the Opus 5 primary for terminal long-horizon / max-throughput coding-agent work. (No public SWE-bench Verified / GPQA figure.)"
     },
@@ -113,13 +117,13 @@
     "coding": {
       "tiers": {
         "max": {
-          "model": "claude-fable-5",
-          "alternates": ["claude-opus-5", "gpt-5.6-sol"],
+          "model": "gpt-6-astra",
+          "alternates": ["claude-fable-5", "claude-opus-5"],
           "good_for": "hardest reasoning, architecture, deep repo-level engineering - quality-first"
         },
         "frontier": {
           "model": "claude-opus-5",
-          "alternates": ["gpt-5.6-sol", "claude-fable-5"],
+          "alternates": ["gpt-6-astra", "gpt-5.6-sol", "claude-fable-5"],
           "good_for": "hard bounded coding + reasoning subtasks - frontier quality (leads most coding/reasoning benchmarks) at lower cost; gpt-5.6-sol alternate for terminal long-horizon / max throughput"
         },
         "mid": {

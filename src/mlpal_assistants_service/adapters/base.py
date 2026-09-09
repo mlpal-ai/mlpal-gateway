@@ -301,9 +301,10 @@ class TokenUsage:
     output_tokens: int = 0
     total_tokens: int = 0
     cached_tokens: int = 0
-    # Prompt-cache WRITES, by TTL tier (Anthropic only; billed 1.25x / 2x input).
-    # Like cached_tokens, whether input_tokens already contains them follows
-    # the adapter's cached_tokens_included_in_input.
+    # Prompt-cache WRITES by price tier: `5m` = the standard 1.25x write
+    # (Anthropic 5-minute TTL, and OpenAI's untiered cache write); `1h` = the
+    # 2x Anthropic 1-hour TTL. Like cached_tokens, whether input_tokens already
+    # contains them follows the adapter's cached_tokens_included_in_input.
     cache_write_5m_tokens: int = 0
     cache_write_1h_tokens: int = 0
 
