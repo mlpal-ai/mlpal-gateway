@@ -1,7 +1,7 @@
 # MLPal Gateway — Master Feature List
 
 One codebase, two deployments. ✅ = present · ⚙️ = present, different default/backing · — = absent by design.
-Updated 2026-09-09.
+Updated 2026-09-11.
 
 ## Inference surfaces
 
@@ -18,6 +18,7 @@ Updated 2026-09-09.
 | **Universal `reasoning_effort`** — one ordinal ladder (`none < minimal < low < medium < high < xhigh < max`) on the OpenAI wire (`reasoning_effort`, `reasoning_effort_strict`) and the Anthropic wire (`output_config.effort`, or a `thinking` budget band), mapped to OpenAI `reasoning.effort` / Anthropic `output_config.effort` / Gemini `thinking_level`; per-model rungs probe-verified in the catalog (`effort_levels`, `default_effort`); unsupported rungs clamp toward intent and are reported (`metadata.reasoning_effort`, `X-MLPal-Reasoning-Effort`), strict mode → 400 | ✅ | ✅ |
 | `reasoning_tokens` in usage on both wires (OpenAI, Anthropic thinking tokens, Gemini thoughts) | ✅ | ✅ |
 | **Async image jobs**: `wait:false` returns a job id, poll `GET /v1/images/jobs/{id}`; image quality tiers (`lite`/standard/`hd`) priced per tier | ✅ | ✅ |
+| **Token-priced image metering** (gpt-image-2.5 flare/sunburst): text-input, image-input and image-output tokens billed at their own list rates, quality ladder `low`…`max` on the wire, tokens returned in the cost block | ✅ | ✅ |
 | `X-MLPal-Compute-Units` header on native responses | ✅ | ✅ |
 | Deprecated `/v2/*` aliases (yodex transition) | ✅ until drained | — (`/v2` reserved) |
 | Bedrock-mantle passthrough at `/mantle/v1/messages` | opt-in flag | — (module not shipped) |
@@ -26,7 +27,7 @@ Updated 2026-09-09.
 
 | Feature | Managed | Self-hosted |
 |---|---|---|
-| Curated registry (83 models incl. GPT-6 Astra: OpenAI, Anthropic, Google, Bedrock open-weights; deprecations carry a successor + shutdown date) | ✅ | ✅ same feed |
+| Curated registry (85 models incl. GPT-6 Astra and GPT Image 2.5: OpenAI, Anthropic, Google, Bedrock open-weights; deprecations carry a successor + shutdown date) | ✅ | ✅ same feed |
 | Declarative catalog feed + reconcile (insert / update / **soft-retire**, provenance) | manual/CI run | ✅ every boot |
 | Effective-dated pass-through pricing (markup 1.00, 1 CU = $10) | ✅ | ✅ |
 | **Serving backends**: the same model served via first-party API, Bedrock, Vertex, or Azure Foundry in priority order (`MLPAL_<FAMILY>_BACKENDS`); third-party adapters via pip entry point | ✅ | ✅ |

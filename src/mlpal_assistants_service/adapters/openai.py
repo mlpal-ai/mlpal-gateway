@@ -69,6 +69,38 @@ def _completions_cache_tokens(usage: Any) -> tuple[int, int]:
     )
 
 
+# gpt-image-2.x accept low/medium/high/xhigh/max/auto; standard/hd are the
+# cross-provider aliases. DALL-E only knows standard/hd.
+_GPT_IMAGE_QUALITY = {
+    ImageQuality.STANDARD: "medium", ImageQuality.HD: "high", ImageQuality.AUTO: "auto",
+    ImageQuality.LOW: "low", ImageQuality.MEDIUM: "medium", ImageQuality.HIGH: "high",
+    ImageQuality.XHIGH: "xhigh", ImageQuality.MAX: "max",
+}
+_DALLE_QUALITY = {
+    ImageQuality.HD: "hd", ImageQuality.HIGH: "hd", ImageQuality.XHIGH: "hd", ImageQuality.MAX: "hd",
+}
+
+
+def _openai_image_quality(model: str, quality: ImageQuality) -> str:
+    if model.startswith("gpt-image"):
+        return _GPT_IMAGE_QUALITY.get(quality, "medium")
+    return _DALLE_QUALITY.get(quality, "standard")
+
+
+def _image_usage(usage: Any) -> TokenUsage | None:
+    """gpt-image usage → TokenUsage (text+image input, image output). Providers
+    that report no usage (DALL-E) return None and are billed per image."""
+    if usage is None:
+        return None
+    details = getattr(usage, "input_tokens_details", None)
+    image_in = int(getattr(details, "image_tokens", 0) or 0) if details is not None else 0
+    return TokenUsage(
+        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        image_input_tokens=image_in,
+    )
+
+
 def _reasoning_tokens(usage: Any) -> int | None:
     """Hidden reasoning tokens (subset of output_tokens) from a Responses usage."""
     details = getattr(usage, "output_tokens_details", None) if usage else None
@@ -1692,17 +1724,7 @@ class OpenAIAdapter(BaseAdapter):
             size_str = ImageSizeResolver.to_pixels_openai(size, model=model)
 
             # gpt-image models use different quality values than DALL-E
-            if model.startswith("gpt-image"):
-                # gpt-image: low, medium, high, auto
-                quality_map = {
-                    ImageQuality.STANDARD: "medium",
-                    ImageQuality.HD: "high",
-                    ImageQuality.AUTO: "auto",
-                }
-                quality_str = quality_map.get(quality, "medium")
-            else:
-                # DALL-E: standard, hd
-                quality_str = quality.value if quality != ImageQuality.AUTO else "standard"
+            quality_str = _openai_image_quality(model, quality)
 
             params: dict[str, Any] = {
                 "model": model,
@@ -1745,6 +1767,7 @@ class OpenAIAdapter(BaseAdapter):
                 latency_ms=latency_ms,
                 prompt=prompt,
                 revised_prompt=revised_prompt,
+                usage=_image_usage(getattr(response, "usage", None)),
             )
 
         except Exception as e:
@@ -1877,6 +1900,7 @@ class OpenAIAdapter(BaseAdapter):
                 latency_ms=latency_ms,
                 prompt=prompt,
                 revised_prompt=revised_prompt,
+                usage=_image_usage(getattr(response, "usage", None)),
             )
 
         except Exception as e:

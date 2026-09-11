@@ -77,6 +77,14 @@ class ModelPricing(Base, TimestampMixin):
         nullable=True,
     )
 
+    # Token-priced image models (gpt-image-2.x): list $/1M for IMAGE input
+    # tokens; input_rate is then the TEXT input rate and output_rate the image
+    # output rate. NULL = image-input tokens bill at input_rate.
+    image_input_rate: Mapped[Decimal | None] = mapped_column(
+        Numeric(12, 8),
+        nullable=True,
+    )
+
     # Rate unit description
     rate_unit: Mapped[str] = mapped_column(
         String(50),

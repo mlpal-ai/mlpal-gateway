@@ -310,6 +310,9 @@ class TokenUsage:
     # Hidden reasoning/thinking tokens (subset of output_tokens). None = the
     # provider does not report them separately (Anthropic).
     reasoning_tokens: int | None = None
+    # Image-generation only: input tokens that were IMAGE tokens (subset of
+    # input_tokens; the rest are text). Priced separately by OpenAI.
+    image_input_tokens: int = 0
 
     def __post_init__(self) -> None:
         if self.total_tokens == 0:
@@ -359,7 +362,13 @@ class ImageQuality(str, Enum):
 
     STANDARD = "standard"
     HD = "hd"
+    # gpt-image-2.x native ladder (low < medium < high < xhigh < max);
+    # standard/hd stay as the cross-provider aliases (medium / high).
+    LOW = "low"
+    MEDIUM = "medium"
     HIGH = "high"
+    XHIGH = "xhigh"
+    MAX = "max"
     AUTO = "auto"
 
 
@@ -672,7 +681,7 @@ class ImageSizeResolver:
         if isinstance(size_input, ImageSize):
             size_input = size_input.value
         size_str = size_input.lower().strip()
-        wants_hd = quality in (ImageQuality.HD, ImageQuality.HIGH)
+        wants_hd = quality in (ImageQuality.HD, ImageQuality.HIGH, ImageQuality.XHIGH, ImageQuality.MAX)
 
         if size_str in cls.GOOGLE_IMAGE_SIZE_ALIASES:
             tier = cls.GOOGLE_IMAGE_SIZE_ALIASES[size_str]
@@ -769,6 +778,9 @@ class ImageGenerationResponse:
     prompt: str = ""
     revised_prompt: str | None = None  # Some models revise prompts
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    # Token usage when the provider bills images per token (gpt-image-2.x);
+    # None for per-image models — the service then bills per image.
+    usage: TokenUsage | None = None
 
 
 @dataclass

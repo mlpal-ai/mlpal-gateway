@@ -54,12 +54,12 @@ REGISTRY_FIELDS = (
 # feeds may carry them (the live dump does) but the reconcile ignores them.
 PRICING_KEY = ("model_tag", "operation")
 PRICING_FIELDS = (
-    "tier", "input_rate", "output_rate", "cache_read_rate", "rate_unit",
-    "markup_multiplier", "cu_to_dollar",
+    "tier", "input_rate", "output_rate", "cache_read_rate", "image_input_rate",
+    "rate_unit", "markup_multiplier", "cu_to_dollar",
 )
 _NUMERIC = {
-    "input_rate", "output_rate", "cache_read_rate", "markup_multiplier",
-    "cu_to_dollar",
+    "input_rate", "output_rate", "cache_read_rate", "image_input_rate",
+    "markup_multiplier", "cu_to_dollar",
 }
 
 

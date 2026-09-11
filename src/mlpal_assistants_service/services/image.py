@@ -412,12 +412,33 @@ class ImageService:
             # 4. Calculate latency and compute units
             latency_ms = int((time.perf_counter() - start_time) * 1000)
 
-            cu = await self._pricing.calculate_compute_units(
-                model_tag=resolved_model_tag,
-                input_units=request.n,
-                output_units=0,
-                operation="image_generation",
+            # Token-priced image models (gpt-image-2.x) report usage and carry a
+            # per_1m_tokens pricing row: bill text input, image input, and
+            # image output exactly. Per-image rows bill n images as before.
+            usage = getattr(response, "usage", None)
+            pricing_row = await self._pricing.get_pricing(resolved_model_tag, "image_generation")
+            token_priced = (
+                usage is not None
+                and pricing_row is not None
+                and pricing_row.rate_unit in ("per_1m_tokens", "per_1k_tokens")
             )
+            if token_priced:
+                cu = await self._pricing.calculate_compute_units(
+                    model_tag=resolved_model_tag,
+                    input_units=usage.input_tokens - usage.image_input_tokens,
+                    output_units=usage.output_tokens,
+                    operation="image_generation",
+                    image_input_units=usage.image_input_tokens,
+                )
+                billed_input_tokens, billed_output_tokens = usage.input_tokens, usage.output_tokens
+            else:
+                cu = await self._pricing.calculate_compute_units(
+                    model_tag=resolved_model_tag,
+                    input_units=request.n,
+                    output_units=0,
+                    operation="image_generation",
+                )
+                billed_input_tokens, billed_output_tokens = 0, 0
             compute_units = cu
 
             # 5. Fire-and-forget: billing increment, usage recording
@@ -429,6 +450,8 @@ class ImageService:
                     resolved_model_tag=resolved_model_tag,
                     provider=model_info.provider,
                     compute_units=compute_units,
+                    input_tokens=billed_input_tokens,
+                    output_tokens=billed_output_tokens,
                     latency_ms=latency_ms,
                     billing_needs_ensure=not billing_existed,
                     budgets=budgets,
@@ -452,6 +475,8 @@ class ImageService:
                     images_generated=len(images),
                     latency_ms=latency_ms,
                     compute_units=float(compute_units),
+                    input_tokens=billed_input_tokens if token_priced else None,
+                    output_tokens=billed_output_tokens if token_priced else None,
                 ),
                 routing=routing_metadata,
             )

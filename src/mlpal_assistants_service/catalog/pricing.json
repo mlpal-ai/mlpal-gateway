@@ -833,6 +833,34 @@
     "output_cu_rate": "0.01020000"
   },
   {
+    "model_tag": "gpt-image-2.5-flare",
+    "operation": "image_generation",
+    "tier": "premium",
+    "input_rate": "5.00000000",
+    "output_rate": "30.00000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-09-11",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "1.50000000",
+    "output_cu_rate": "9.00000000",
+    "image_input_rate": "8.00000000"
+  },
+  {
+    "model_tag": "gpt-image-2.5-sunburst",
+    "operation": "image_generation",
+    "tier": "premium",
+    "input_rate": "5.00000000",
+    "output_rate": "30.00000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-09-11",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "1.50000000",
+    "output_cu_rate": "9.00000000",
+    "image_input_rate": "8.00000000"
+  },
+  {
     "model_tag": "gpt-image-2",
     "operation": "image_generation",
     "tier": "premium",

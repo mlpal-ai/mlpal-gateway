@@ -67,7 +67,7 @@ class PricingService:
     CACHE_TTL = 3600  # 1 hour
     # Version the key whenever the serialized row shape changes: entries cached
     # under an older prefix are simply never read again (v2: + cache_read_rate).
-    CACHE_PREFIX = "pricing:v2:"
+    CACHE_PREFIX = "pricing:v3:"
 
     def __init__(
         self,
@@ -136,6 +136,7 @@ class PricingService:
         provider: str | None = None,
         cache_write_5m_units: int | Decimal = 0,
         cache_write_1h_units: int | Decimal = 0,
+        image_input_units: int | Decimal = 0,
     ) -> Decimal:
         """The billed CU for a request: the model's real cost, pass-through.
 
@@ -158,11 +159,25 @@ class PricingService:
             logger.warning(f"No pricing found for {model_tag}:{operation}, using default")
             return self._calculate_default_cu(input_units, output_units)
 
+        divisor = (
+            Decimal("1000")
+            if pricing.rate_unit == "per_1k_tokens"
+            else Decimal("1000000")
+        )
+        cu_to_dollar = pricing.cu_to_dollar or Decimal("10")
+        # Token-priced image models: image-input tokens carry their own list
+        # rate (gpt-image-2.x: $8/M vs $5/M text); NULL falls back to input_rate.
+        image_in = Decimal(image_input_units or 0)
+        image_extra = Decimal("0")
+        if image_in > 0:
+            rate = getattr(pricing, "image_input_rate", None)
+            image_extra = image_in * (rate if rate is not None else pricing.input_rate) / divisor / cu_to_dollar
+
         cached = Decimal(cached_units or 0)
         write_5m = Decimal(cache_write_5m_units or 0)
         write_1h = Decimal(cache_write_1h_units or 0)
         if cached <= 0 and write_5m <= 0 and write_1h <= 0:
-            return pricing.calculate_provider_cost(input_units, output_units)
+            return pricing.calculate_provider_cost(input_units, output_units) + image_extra
 
         # Cache WRITES (Anthropic only) bill at input_rate x 1.25 (5m) / x 2
         # (1h); `cached_included` governs them exactly like reads.
@@ -175,18 +190,12 @@ class PricingService:
         cache_rate = getattr(pricing, "cache_read_rate", None)
         if cache_rate is None:
             cache_rate = pricing.input_rate * provider_cache_read_multiplier(provider)
-        divisor = (
-            Decimal("1000")
-            if pricing.rate_unit == "per_1k_tokens"
-            else Decimal("1000000")
-        )
-        cu_to_dollar = pricing.cu_to_dollar or Decimal("10")
         settings = get_settings()
         write_dollars = pricing.input_rate * (
             write_5m * settings.cache_5m_write_multiplier
             + write_1h * settings.cache_1h_write_multiplier
         )
-        return base + (cached * cache_rate + write_dollars) / divisor / cu_to_dollar
+        return base + (cached * cache_rate + write_dollars) / divisor / cu_to_dollar + image_extra
 
 
     async def get_cost_breakdown(
@@ -441,6 +450,11 @@ class PricingService:
                 if pricing.cache_read_rate is not None
                 else None
             ),
+            "image_input_rate": (
+                str(pricing.image_input_rate)
+                if getattr(pricing, "image_input_rate", None) is not None
+                else None
+            ),
         }
 
     def _dict_to_pricing(self, data: dict) -> ModelPricing:
@@ -463,4 +477,6 @@ class PricingService:
         # those are also flushed by the CACHE_PREFIX version bump below.
         crr = data.get("cache_read_rate")
         pricing.cache_read_rate = Decimal(crr) if crr is not None else None
+        iir = data.get("image_input_rate")
+        pricing.image_input_rate = Decimal(iir) if iir is not None else None
         return pricing

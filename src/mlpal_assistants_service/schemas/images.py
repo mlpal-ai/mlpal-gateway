@@ -105,12 +105,14 @@ class ImageGenerationRequest(BaseSchema):
             "Automatically converted to provider-specific format."
         ),
     )
-    quality: Literal["standard", "hd"] = Field(
+    quality: Literal["standard", "hd", "low", "medium", "high", "xhigh", "max", "auto"] = Field(
         default="standard",
         description=(
-            "Image quality level. OpenAI gpt-image: standard=medium, hd=high. "
-            "Google Gemini: hd renders at 2K instead of 1K (explicit pixel sizes "
-            "select 1K/2K/4K directly)."
+            "Image quality level. Cross-provider aliases: standard (=medium) and "
+            "hd (=high). gpt-image-2.x also take the native ladder low < medium < "
+            "high < xhigh < max, and auto; cost scales with quality (token-priced). "
+            "Google Gemini: hd/high/xhigh/max render at 2K instead of 1K (explicit "
+            "pixel sizes select 1K/2K/4K directly)."
         ),
     )
     reference_images: list[ReferenceImage] | None = Field(
@@ -237,6 +239,14 @@ class ImageGenerationCost(BaseSchema):
     images_generated: int = Field(..., description="Number of images generated")
     latency_ms: int = Field(..., description="Request latency in milliseconds")
     compute_units: float = Field(..., description="Compute units billed (provider pass-through, no markup)")
+    input_tokens: int | None = Field(
+        default=None,
+        description="Prompt tokens (text + reference-image tokens) for token-priced models; null for per-image models",
+    )
+    output_tokens: int | None = Field(
+        default=None,
+        description="Image output tokens for token-priced models; null for per-image models",
+    )
 
 
 class ImageGenerationResponse(BaseSchema):

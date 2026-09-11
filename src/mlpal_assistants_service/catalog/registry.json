@@ -1893,6 +1893,48 @@
   "pause_reason": null
  },
  {
+  "model_tag": "gpt-image-2.5-flare",
+  "provider": "openai",
+  "provider_model_id": "gpt-image-2.5-flare",
+  "display_name": "GPT Image 2.5 Flare",
+  "description": "OpenAI GPT Image 2.5 Flare (2026-09-08): fast high-quality everyday generation; quality low/medium/high/xhigh/max; token-priced",
+  "capabilities": {
+   "operation": "image_generation",
+   "streaming": true
+  },
+  "context_length": null,
+  "max_output_tokens": null,
+  "pricing_tier": "premium",
+  "fallback_model_tag": null,
+  "priority": 0,
+  "is_active": true,
+  "is_deprecated": false,
+  "deprecation_message": null,
+  "is_paused": false,
+  "pause_reason": null
+ },
+ {
+  "model_tag": "gpt-image-2.5-sunburst",
+  "provider": "openai",
+  "provider_model_id": "gpt-image-2.5-sunburst",
+  "display_name": "GPT Image 2.5 Sunburst",
+  "description": "OpenAI GPT Image 2.5 Sunburst (2026-09-08): precision editing and generation; quality low/medium/high/xhigh/max; token-priced",
+  "capabilities": {
+   "operation": "image_generation",
+   "streaming": true
+  },
+  "context_length": null,
+  "max_output_tokens": null,
+  "pricing_tier": "premium",
+  "fallback_model_tag": null,
+  "priority": 0,
+  "is_active": true,
+  "is_deprecated": false,
+  "deprecation_message": null,
+  "is_paused": false,
+  "pause_reason": null
+ },
+ {
   "model_tag": "gpt-image-2",
   "provider": "openai",
   "provider_model_id": "gpt-image-2",
