@@ -15,10 +15,12 @@ from mlpal_assistants_service.services.pricing import PricingService
 
 
 def _row(**over) -> ModelPricing:
-    base = dict(model_tag="gpt-image-2.5-flare", operation="image_generation", tier="premium",
-                input_rate=Decimal("5"), output_rate=Decimal("30"), image_input_rate=Decimal("8"),
-                rate_unit="per_1m_tokens", markup_multiplier=Decimal("3"), cu_to_dollar=Decimal("10"),
-                input_cu_rate=Decimal("1.5"), output_cu_rate=Decimal("9"))
+    base = {
+        "model_tag": "gpt-image-2.5-flare", "operation": "image_generation", "tier": "premium",
+        "input_rate": Decimal("5"), "output_rate": Decimal("30"), "image_input_rate": Decimal("8"),
+        "rate_unit": "per_1m_tokens", "markup_multiplier": Decimal("3"), "cu_to_dollar": Decimal("10"),
+        "input_cu_rate": Decimal("1.5"), "output_cu_rate": Decimal("9"),
+    }
     base.update(over)
     return ModelPricing(**base)
 
@@ -55,9 +57,13 @@ async def test_no_image_tokens_is_unchanged(pricing):
 
 def test_redis_serializer_round_trips_image_input_rate_and_prefix_bumped():
     svc = PricingService.__new__(PricingService)
-    row = _row(); row.id = 1; row.is_active = True
     from datetime import date
-    row.effective_date = date(2026, 9, 11); row.cache_read_rate = None
+
+    row = _row()
+    row.id = 1
+    row.is_active = True
+    row.effective_date = date(2026, 9, 11)
+    row.cache_read_rate = None
     back = svc._dict_to_pricing(svc._pricing_to_dict(row))
     assert back.image_input_rate == Decimal("8") and back.cache_read_rate is None
     assert PricingService.CACHE_PREFIX == "pricing:v3:"   # new column → new prefix (serializer rule)
