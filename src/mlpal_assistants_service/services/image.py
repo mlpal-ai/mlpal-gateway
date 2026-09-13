@@ -33,7 +33,7 @@ from mlpal_assistants_service.core.exceptions import (
     QuotaExceededError,
     WalletEmptyError,
 )
-from mlpal_assistants_service.core.storage import AssetStorageService
+from mlpal_assistants_service.core.storage import AssetStorageError, AssetStorageService
 from mlpal_assistants_service.repositories.usage_repository import UsageRepository
 from mlpal_assistants_service.schemas.images import (
     GeneratedImage,
@@ -272,36 +272,45 @@ class ImageService:
         extension = img.format or "png"
 
         if self._asset_storage is not None:
-            asset = await self._asset_storage.upload_asset(
-                data=image_bytes,
-                filename=f"image_{index}.{extension}",
-                content_type=content_type,
-                user_id=user_id,
-                trace_id=trace_id,
-            )
-            return GeneratedImage(
-                url=asset.url,
-                expires_at=asset.expires_at,
-                revised_prompt=img.revised_prompt,
-                content_type=asset.content_type,
-                size_bytes=asset.size_bytes,
-            )
+            try:
+                asset = await self._asset_storage.upload_asset(
+                    data=image_bytes,
+                    filename=f"image_{index}.{extension}",
+                    content_type=content_type,
+                    user_id=user_id,
+                    trace_id=trace_id,
+                )
+                return GeneratedImage(
+                    url=asset.url,
+                    expires_at=asset.expires_at,
+                    revised_prompt=img.revised_prompt,
+                    content_type=asset.content_type,
+                    size_bytes=asset.size_bytes,
+                )
+            except AssetStorageError as e:
+                # The image was generated and billed; losing it to a storage
+                # fault (missing bucket, bad creds) would charge the user for
+                # nothing. Degrade to inline data, loudly.
+                logger.warning(
+                    f"Asset storage upload failed, returning inline image data: {e}",
+                    extra={"trace_id": trace_id, "fallback": "inline_base64"},
+                )
         else:
             logger.warning(
                 "AssetStorageService not configured, returning base64 data",
-                trace_id=trace_id,
+                extra={"trace_id": trace_id, "fallback": "inline_base64"},
             )
-            from datetime import datetime, timedelta
+        from datetime import datetime, timedelta
 
-            b64_data = img.base64 or base64.b64encode(image_bytes).decode("utf-8")
-            data_url = f"data:{content_type};base64,{b64_data}"
-            return GeneratedImage(
-                url=data_url,
-                expires_at=datetime.now(UTC) + timedelta(hours=24),
-                revised_prompt=img.revised_prompt,
-                content_type=content_type,
-                size_bytes=len(image_bytes),
-            )
+        b64_data = img.base64 or base64.b64encode(image_bytes).decode("utf-8")
+        data_url = f"data:{content_type};base64,{b64_data}"
+        return GeneratedImage(
+            url=data_url,
+            expires_at=datetime.now(UTC) + timedelta(hours=24),
+            revised_prompt=img.revised_prompt,
+            content_type=content_type,
+            size_bytes=len(image_bytes),
+        )
 
     async def generate(
         self,

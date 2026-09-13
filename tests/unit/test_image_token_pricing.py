@@ -92,3 +92,33 @@ def test_request_schema_accepts_native_ladder():
 def test_gemini_treats_xhigh_and_max_as_hd():
     assert ImageSizeResolver.to_image_size_google("1024x1024", ImageQuality.MAX, "gemini-3-pro-image") == \
         ImageSizeResolver.to_image_size_google("1024x1024", ImageQuality.HD, "gemini-3-pro-image")
+
+
+@pytest.mark.asyncio
+async def test_upload_failure_degrades_to_inline_image_not_500():
+    from types import SimpleNamespace
+
+    from mlpal_assistants_service.adapters.base import GeneratedImage as AdapterImage
+    from mlpal_assistants_service.core.storage import AssetStorageError
+    from mlpal_assistants_service.services.image import ImageService
+
+    svc = ImageService.__new__(ImageService)
+    svc._asset_storage = SimpleNamespace(upload_asset=AsyncMock(side_effect=AssetStorageError("NoSuchBucket")))
+    img = AdapterImage(base64="aGk=", format="png")
+    out = await svc._upload_single_image(img, 0, "115", "trace")
+    assert out.url.startswith("data:image/png;base64,") and out.size_bytes == 2
+
+
+def test_all_openai_image_rows_are_token_priced_with_official_rates():
+    import json
+
+    rows = {r["model_tag"]: r for r in json.load(open("src/mlpal_assistants_service/catalog/pricing.json"))
+            if r["operation"] == "image_generation" and r["model_tag"].startswith("gpt-image")}
+    expected = {"gpt-image-2.5-flare": ("5", "8", "30"), "gpt-image-2.5-sunburst": ("5", "8", "30"),
+                "gpt-image-2": ("5", "8", "30"), "gpt-image-1.5": ("5", "8", "32"),
+                "gpt-image-1": ("5", "10", "40"), "gpt-image-1-mini": ("2", "2.5", "8")}
+    for tag, (t, i, o) in expected.items():
+        r = rows[tag]
+        assert r["rate_unit"] == "per_1m_tokens", tag
+        assert (Decimal(r["input_rate"]), Decimal(r["image_input_rate"]), Decimal(r["output_rate"])) == (Decimal(t), Decimal(i), Decimal(o)), tag
+        assert Decimal(r["input_cu_rate"]) == Decimal(t) * 3 / 10 and Decimal(r["output_cu_rate"]) == Decimal(o) * 3 / 10, tag
