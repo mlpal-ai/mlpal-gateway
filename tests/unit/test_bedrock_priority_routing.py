@@ -80,3 +80,56 @@ def test_per_model_rules_match_cloud_prefixed_claude_ids():
     assert a._skips_temperature("global.anthropic.claude-sonnet-5")
     assert not a._skips_temperature("global.anthropic.claude-haiku-4-5-20251001-v1:0")
     assert a.get_model_capabilities("global.anthropic.claude-opus-4-5-20251101-v1:0") is a.get_model_capabilities("claude-opus-4-5-20251101")
+
+
+def test_native_bedrock_backend_targets_runtime_by_profile_id():
+    import json
+
+    from mlpal_assistants_service.services.bedrock_mantle import BedrockMantleClient
+
+    c = BedrockMantleClient(region="us-east-2", endpoint="runtime", model_map={"claude-opus-5": "global.anthropic.claude-opus-5"})
+    assert c.url == "https://bedrock-runtime.us-east-2.amazonaws.com/anthropic/v1/messages"
+    body, obj, removed = c.adapt_body(json.dumps({"model": "claude-opus-5", "max_tokens": 5, "messages": [],
+                                                  "output_config": {"format": {"type": "json_schema"}}}).encode())
+    assert obj["model"] == "global.anthropic.claude-opus-5" and obj["anthropic_version"] == "bedrock-2023-05-31"
+    assert "output_config" in obj and removed == []          # runtime keeps output_config byte-faithful
+    # unmapped model on runtime is passed through untouched (Bedrock answers with a clear 4xx)
+    _, obj2, _ = c.adapt_body(json.dumps({"model": "claude-fable-5-1", "messages": []}).encode())
+    assert obj2["model"] == "claude-fable-5-1"
+
+
+def test_legacy_mantle_endpoint_keeps_prefix_and_output_config_strip():
+    import json
+
+    from mlpal_assistants_service.services.bedrock_mantle import BedrockMantleClient
+
+    c = BedrockMantleClient(region="us-east-1", endpoint="mantle")
+    assert c.url == "https://bedrock-mantle.us-east-1.api.aws/anthropic/v1/messages"
+    _, obj, removed = c.adapt_body(json.dumps({"model": "claude-haiku-4-5", "messages": [],
+                                               "output_config": {"format": {"type": "json_schema"}}}).encode())
+    assert obj["model"] == "anthropic.claude-haiku-4-5" and "output_config" not in obj and removed
+
+
+def test_runtime_override_moves_the_native_wire_too(bedrock_first, monkeypatch):
+    """PUT /admin/v1/settings/anthropic_backends must flip BOTH wires: the
+    adapter factory already honoured the override; the native selection
+    read only the env value (found 2026-09-17)."""
+    from mlpal_assistants_service.services import runtime_settings as rs
+
+    s, f = bedrock_first
+    monkeypatch.setattr(s, "bedrock_mantle_models", json.dumps(["claude-opus-5"]))
+    ab._backends.clear()
+    ab._backend_lists.clear()
+    assert ab.native_backend_for(s, "claude-opus-5").name == "bedrock"
+    assert f.serving_backend_for("anthropic", "claude-opus-5") == "bedrock"
+    # runtime flip back to first-party (env untouched)
+    monkeypatch.setitem(rs._store, "anthropic_backends", "first_party,bedrock")
+    rs._invalidate_dependents()
+    assert ab.effective_anthropic_backends(s) == "first_party,bedrock"
+    assert ab.native_backend_for(s, "claude-opus-5").name == "first_party"
+    assert f.serving_backend_for("anthropic", "claude-opus-5") == "first_party"
+    # clearing the override returns to the env order
+    monkeypatch.delitem(rs._store, "anthropic_backends")
+    rs._invalidate_dependents()
+    assert ab.native_backend_for(s, "claude-opus-5").name == "bedrock"
+    assert f.serving_backend_for("anthropic", "claude-opus-5") == "bedrock"

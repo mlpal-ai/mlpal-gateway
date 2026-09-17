@@ -85,27 +85,32 @@ async def probe_bedrock() -> dict[str, str]:
             if await _try_messages(client, cand):
                 mapping[fp_id] = cand
                 break
-        if await _probe_mantle(region, fp_id):
+        if await _probe_mantle(region, fp_id, mapping.get(fp_id)):
             mantle.append(fp_id)
     return mapping, mantle
 
 
-async def _probe_mantle(region: str, fp_id: str) -> bool:
-    """Whether the NATIVE bedrock-mantle endpoint serves this model (its
-    population is a subset of bedrock-runtime's)."""
+async def _probe_mantle(region: str, fp_id: str, profile_id: str | None = None) -> bool:
+    """Whether the NATIVE Anthropic wire on Bedrock serves this model —
+    bedrock-runtime by profile id (default) or the legacy mantle host."""
     import httpx
 
+    from mlpal_assistants_service.core.config import get_settings
     from mlpal_assistants_service.services.bedrock_mantle import BedrockMantleClient
 
-    signer = BedrockMantleClient(region=region)
+    endpoint = get_settings().bedrock_native_endpoint
+    signer = BedrockMantleClient(
+        region=region, endpoint=endpoint, model_map={fp_id: profile_id} if profile_id else None
+    )
     body = json.dumps(
         {
             "anthropic_version": "bedrock-2023-05-31",
-            "model": f"anthropic.{fp_id}",
+            "model": fp_id if profile_id else f"anthropic.{fp_id}",
             "max_tokens": 1,
             "messages": [{"role": "user", "content": "hi"}],
         }
     ).encode()
+    body, _, _ = signer.adapt_body(body)
     async with httpx.AsyncClient(timeout=60) as c:
         r = await c.post(signer.url, content=body, headers=signer.sign(body))
     ok = r.status_code == 200

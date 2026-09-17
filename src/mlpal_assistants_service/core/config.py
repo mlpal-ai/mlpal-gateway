@@ -369,6 +369,15 @@ class Settings(BaseSettings):
     bedrock_mantle_region: str = Field(
         default="us-east-1", alias="MLPAL_BEDROCK_MANTLE_REGION",
     )
+    # Which Bedrock host serves the NATIVE Anthropic wire: "runtime"
+    # (bedrock-runtime.<region>.amazonaws.com/anthropic/v1/messages — full
+    # Claude population, addressed by inference-profile id from
+    # MLPAL_BEDROCK_ANTHROPIC_MODELS; verified 2026-09-17: cache 5m/1h,
+    # effort, adaptive thinking, tools, streaming, betas) or the legacy
+    # "mantle" compatibility host (Haiku only in us-east-2 as of 09-2026).
+    bedrock_native_endpoint: str = Field(
+        default="runtime", alias="MLPAL_BEDROCK_NATIVE_ENDPOINT",
+    )
     sqs_usage_queue_url: str | None = Field(default=None, alias="MLPAL_SQS_USAGE_QUEUE_URL")
     sqs_usage_batch_size: int = Field(
         default=10,  # 10 messages per poll (SQS max)

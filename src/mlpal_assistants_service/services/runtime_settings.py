@@ -130,5 +130,11 @@ async def set_value(session: Any, name: str, value: str | None) -> None:
 def _invalidate_dependents() -> None:
     """Drop caches derived from these settings so changes apply immediately."""
     from mlpal_assistants_service.adapters.factory import get_adapter_factory
+    from mlpal_assistants_service.services.messages_v2 import anthropic_backend
 
     get_adapter_factory()._resolution.clear()
+    # Native-wire backend lists are keyed by the effective priority, so a
+    # changed override already misses; clearing keeps memory bounded and
+    # makes the switch explicit in one place.
+    anthropic_backend._backends.clear()
+    anthropic_backend._backend_lists.clear()

@@ -94,9 +94,22 @@ class BedrockMantleClient:
     transport happens in the route (httpx for streaming support) — this
     class only owns the regional URL, the signer, and body adaptation."""
 
-    def __init__(self, region: str = "us-east-1") -> None:
+    def __init__(
+        self,
+        region: str = "us-east-1",
+        endpoint: str = "runtime",
+        model_map: dict[str, str] | None = None,
+    ) -> None:
         self.region = region
-        self.url = f"https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages"
+        self.endpoint = endpoint
+        if endpoint == "mantle":
+            self.url = f"https://bedrock-mantle.{region}.api.aws/anthropic/v1/messages"
+        else:
+            self.url = f"https://bedrock-runtime.{region}.amazonaws.com/anthropic/v1/messages"
+        # provider model id → Bedrock inference-profile id (the probe-verified
+        # MLPAL_BEDROCK_ANTHROPIC_MODELS map). bedrock-runtime addresses Claude
+        # by profile id (global.anthropic.claude-opus-5), never by bare id.
+        self.model_map = dict(model_map or {})
         self._session = boto3.Session(region_name=region)
 
     def sign(
@@ -119,8 +132,7 @@ class BedrockMantleClient:
         SigV4Auth(creds, "bedrock", self.region).add_auth(req)
         return dict(req.prepare().headers)
 
-    @staticmethod
-    def adapt_body(raw: bytes) -> tuple[bytes, dict[str, Any], list[str]]:
+    def adapt_body(self, raw: bytes) -> tuple[bytes, dict[str, Any], list[str]]:
         """Normalize the incoming Anthropic Messages body for Bedrock.
 
         Mutations:
@@ -141,7 +153,9 @@ class BedrockMantleClient:
         obj = json.loads(raw)
         obj.setdefault("anthropic_version", ANTHROPIC_VERSION)
         model = obj.get("model", "")
-        if model and not model.startswith("anthropic."):
+        if model in self.model_map:
+            obj["model"] = self.model_map[model]
+        elif model and self.endpoint == "mantle" and not model.startswith("anthropic."):
             obj["model"] = f"anthropic.{model}"
 
         removed: list[str] = []
@@ -165,8 +179,10 @@ class BedrockMantleClient:
         # CDE use case; users rarely look at auto-generated titles.
         #
         # When Bedrock adds json_schema support, remove this filter.
+        # bedrock-runtime's native wire accepts output_config (effort verified
+        # 2026-09-17); the strip below is a mantle-only quirk.
         oc = obj.get("output_config")
-        if isinstance(oc, dict):
+        if self.endpoint == "mantle" and isinstance(oc, dict):
             fmt = oc.get("format")
             if isinstance(fmt, dict):
                 fmt_type = fmt.get("type")

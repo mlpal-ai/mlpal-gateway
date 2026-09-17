@@ -56,9 +56,16 @@ class AnthropicBedrockBackend:
     def __init__(self, settings: Settings) -> None:
         import json as _json
 
+        from mlpal_assistants_service.adapters.serving import _parse_map
         from mlpal_assistants_service.services.bedrock_mantle import BedrockMantleClient
 
-        self._signer = BedrockMantleClient(region=settings.bedrock_mantle_region)
+        self._signer = BedrockMantleClient(
+            region=settings.bedrock_mantle_region,
+            endpoint=settings.bedrock_native_endpoint,
+            model_map=_parse_map(
+                settings.bedrock_anthropic_models, "MLPAL_BEDROCK_ANTHROPIC_MODELS"
+            ),
+        )
         self.url = self._signer.url
         # Mantle serves a SUBSET of bedrock-runtime (see config). Empty/unset
         # list → serve nothing natively; core falls back to the adapter path,
@@ -139,6 +146,16 @@ NativeBackend = AnthropicFirstPartyBackend | AnthropicBedrockBackend | Anthropic
 _backend_lists: dict[tuple, list] = {}
 
 
+def effective_anthropic_backends(settings: Settings) -> str:
+    """The priority list in force: the console/DB runtime override when set
+    (PUT /admin/v1/settings/anthropic_backends), else the env value — the
+    same precedence the adapter factory applies, so one flip moves BOTH
+    wires (native passthrough here, adapter path there)."""
+    from mlpal_assistants_service.services import runtime_settings
+
+    return runtime_settings.get("anthropic_backends") or settings.anthropic_backends
+
+
 def native_backends(settings: Settings) -> list[NativeBackend]:
     """Every configured native-path backend in MLPAL_ANTHROPIC_BACKENDS
     priority order. A native backend only takes a model it SERVES (bedrock:
@@ -146,12 +163,15 @@ def native_backends(settings: Settings) -> list[NativeBackend]:
     and fall through — e.g. `bedrock,first_party` keeps first-party's
     byte-faithful passthrough for models the mantle endpoint lacks instead of
     dropping them onto the lossy translating edge."""
+    priority = effective_anthropic_backends(settings)
     key = (
-        settings.anthropic_backends,
+        priority,
         settings.anthropic_api_key,
         settings.anthropic_base_url,
         settings.bedrock_mantle_region,
         settings.bedrock_mantle_models,
+        settings.bedrock_anthropic_models,
+        settings.bedrock_native_endpoint,
         settings.azure_openai_endpoint,
         settings.azure_anthropic_deployments,
     )
@@ -159,7 +179,7 @@ def native_backends(settings: Settings) -> list[NativeBackend]:
     if hit is not None:
         return hit
     out: list[NativeBackend] = []
-    for name in (n.strip() for n in settings.anthropic_backends.split(",")):
+    for name in (n.strip() for n in priority.split(",")):
         if name == "first_party" and settings.anthropic_api_key:
             out.append(AnthropicFirstPartyBackend(settings))
         elif name == "bedrock":
@@ -194,19 +214,22 @@ def get_anthropic_backend(
     """Resolve the native-path backend: first configured entry of
     MLPAL_ANTHROPIC_BACKENDS. `vertex` is adapter-path only for now (its
     native wire needs OAuth token refresh — tracked in the worklog)."""
+    priority = effective_anthropic_backends(settings)
     key = (
-        settings.anthropic_backends,
+        priority,
         settings.anthropic_api_key,
         settings.anthropic_base_url,
         settings.bedrock_mantle_region,
         settings.bedrock_mantle_models,
+        settings.bedrock_anthropic_models,
+        settings.bedrock_native_endpoint,
         settings.azure_openai_endpoint,
         settings.azure_anthropic_deployments,
     )
     hit = _backends.get(key)
     if hit is not None:
         return hit  # type: ignore[return-value]
-    for name in (n.strip() for n in settings.anthropic_backends.split(",")):
+    for name in (n.strip() for n in priority.split(",")):
         backend: object | None = None
         if name == "first_party" and settings.anthropic_api_key:
             backend = AnthropicFirstPartyBackend(settings)
@@ -219,7 +242,7 @@ def get_anthropic_backend(
             return backend
     raise ValueError(
         f"No usable native Anthropic backend in "
-        f"MLPAL_ANTHROPIC_BACKENDS={settings.anthropic_backends!r} "
+        f"MLPAL_ANTHROPIC_BACKENDS={priority!r} "
         "(first_party needs ANTHROPIC_API_KEY; bedrock needs AWS creds; "
         "azure needs MLPAL_AZURE_OPENAI_{ENDPOINT,API_KEY})"
     )

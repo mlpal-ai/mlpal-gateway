@@ -219,7 +219,7 @@ def test_v2_native_backend_selection(monkeypatch):
     monkeypatch.setattr(s, "anthropic_api_key", None)
     backend = get_anthropic_backend(s)
     assert isinstance(backend, AnthropicBedrockBackend)
-    assert "bedrock-mantle" in backend.url
+    assert "bedrock-runtime" in backend.url   # native Anthropic wire on bedrock-runtime (default)
 
     monkeypatch.setattr(s, "anthropic_backends", "first_party")
     with pytest.raises(ValueError, match="No usable native Anthropic backend"):
@@ -285,11 +285,13 @@ def test_v2_bedrock_prepare_adapts_and_signs(monkeypatch):
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "test")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "test")
     s = get_settings()
+    monkeypatch.setattr(s, "bedrock_anthropic_models", '{"claude-opus-5": "global.anthropic.claude-opus-5"}')
+    monkeypatch.setattr(s, "bedrock_native_endpoint", "runtime")
     b = AnthropicBedrockBackend(s)
     body = json.dumps({"model": "claude-opus-5", "max_tokens": 1, "messages": []}).encode()
     content, headers = b.prepare(body, {})
     adapted = json.loads(content)
-    assert adapted["model"] == "anthropic.claude-opus-5"
+    assert adapted["model"] == "global.anthropic.claude-opus-5"   # profile id from the verified map
     assert "anthropic_version" in adapted
     assert any(h.lower() == "authorization" for h in headers)  # SigV4 applied
 
