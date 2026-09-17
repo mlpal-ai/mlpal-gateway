@@ -961,6 +961,10 @@ class BaseAdapter(ABC):
     # cloud backends (azure, vertex, bedrock) override. Used by the factory's
     # priority resolution and surfaced in /v1/models.
     backend_name: str = "first_party"
+    # Whether client-supplied MCP servers (URL-addressed) can be passed
+    # through on this backend. Bedrock's OpenAI wire only accepts connector
+    # ARNs, so such requests are served from the next backend instead.
+    supports_mcp_passthrough: bool = True
 
     def serves(self, provider_model_id: str) -> bool:
         """Whether this backend can serve the given provider model ID.

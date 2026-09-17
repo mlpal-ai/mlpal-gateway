@@ -249,6 +249,14 @@ class Settings(BaseSettings):
     bedrock_anthropic_models: str | None = Field(
         default=None, alias="MLPAL_BEDROCK_ANTHROPIC_MODELS"
     )
+    # OpenAI proprietary models on Bedrock (Responses wire at
+    # bedrock-runtime/openai/v1, SigV4): {provider_model_id: inference-profile
+    # id}, e.g. {"gpt-6-astra": "global.openai.gpt-6-astra"}. Explicit for the
+    # same reason as the Claude map; `scripts/probe_backends.py openai`
+    # generates it. `global.` profiles are priced at OpenAI list.
+    bedrock_openai_models: str | None = Field(
+        default=None, alias="MLPAL_BEDROCK_OPENAI_MODELS"
+    )
     # Models the bedrock-mantle NATIVE endpoint serves (JSON list of Anthropic
     # model IDs). Mantle's population is a subset of bedrock-runtime's (newest
     # dateless-ID generation only — live-verified 2026-08-14: opus-4-7/4-8,

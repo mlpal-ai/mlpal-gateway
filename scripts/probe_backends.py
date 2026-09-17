@@ -1,7 +1,8 @@
 """Discover and LIVE-VERIFY what your cloud credentials can serve, and emit
 the exact env values the serving backends need.
 
-    uv run python scripts/probe_backends.py bedrock   # needs AWS creds
+    uv run python scripts/probe_backends.py bedrock   # Claude on Bedrock; needs AWS creds
+    uv run python scripts/probe_backends.py openai    # OpenAI models on Bedrock (Responses wire); needs AWS creds
     uv run python scripts/probe_backends.py vertex    # needs GOOGLE_APPLICATION_CREDENTIALS + MLPAL_VERTEX_PROJECT
     uv run python scripts/probe_backends.py azure     # needs MLPAL_AZURE_OPENAI_{ENDPOINT,API_KEY}
 
@@ -35,6 +36,59 @@ def _anthropic_catalog_ids() -> list[str]:
         and r.get("is_active", True)
         and not r.get("is_deprecated")
     ]
+
+
+def _openai_catalog_chat_ids() -> list[str]:
+    from importlib.resources import files
+    reg = json.loads(
+        files("mlpal_assistants_service.catalog").joinpath("registry.json").read_text()
+    )
+    rows = reg if isinstance(reg, list) else reg.get("models", [])
+    return [
+        r["provider_model_id"]
+        for r in rows
+        if r.get("provider") == "openai"
+        and r.get("is_active", True)
+        and not r.get("is_deprecated")
+        and (r.get("capabilities") or {}).get("operation", "chat") == "chat"
+    ]
+
+
+async def probe_bedrock_openai() -> dict[str, str]:
+    """OpenAI proprietary models on Bedrock's Responses wire
+    (bedrock-runtime/openai/v1, SigV4): {provider_model_id: profile id}."""
+    import boto3
+    import httpx
+
+    from mlpal_assistants_service.adapters.aws_sigv4 import SigV4HttpxAuth
+
+    settings = get_settings()
+    region = settings.bedrock_mantle_region
+    bedrock = boto3.client("bedrock", region_name=region)
+    available = {
+        p["inferenceProfileId"]
+        for p in bedrock.list_inference_profiles()["inferenceProfileSummaries"]
+        if ".openai." in p["inferenceProfileId"]
+    } | {
+        m["modelId"]
+        for m in bedrock.list_foundation_models(byProvider="OpenAI")["modelSummaries"]
+    }
+    url = f"https://bedrock-runtime.{region}.amazonaws.com/openai/v1/responses"
+    mapping: dict[str, str] = {}
+    async with httpx.AsyncClient(auth=SigV4HttpxAuth(region), timeout=60) as c:
+        for fp_id in _openai_catalog_chat_ids():
+            for cand in (f"global.openai.{fp_id}", f"us.openai.{fp_id}", f"openai.{fp_id}"):
+                if cand not in available:
+                    continue
+                print(f"  probing {fp_id} -> {cand}", file=sys.stderr)
+                r = await c.post(
+                    url, json={"model": cand, "input": "hi", "max_output_tokens": 16}
+                )
+                if r.status_code == 200:
+                    mapping[fp_id] = cand
+                    break
+                print(f"    {cand}: HTTP {r.status_code}: {r.text[:110]}", file=sys.stderr)
+    return mapping
 
 
 async def _try_messages(client, model_id: str) -> bool:
@@ -169,6 +223,10 @@ async def main() -> None:
         print(f"\nMLPAL_BEDROCK_ANTHROPIC_MODELS='{json.dumps(mapping)}'")
         print(f"MLPAL_BEDROCK_MANTLE_MODELS='{json.dumps(mantle)}'")
         print("MLPAL_ANTHROPIC_BACKENDS=first_party,bedrock  # or bedrock-first")
+    elif leg == "openai":
+        mapping = await probe_bedrock_openai()
+        print(f"\nMLPAL_BEDROCK_OPENAI_MODELS='{json.dumps(mapping)}'")
+        print("MLPAL_OPENAI_BACKENDS=bedrock,first_party  # or first_party,bedrock")
     elif leg == "vertex":
         mapping = await probe_vertex()
         print(f"\nMLPAL_VERTEX_ANTHROPIC_MODELS='{json.dumps(mapping)}'")

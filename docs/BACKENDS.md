@@ -167,6 +167,35 @@ has model access in (`MLPAL_BEDROCK_MANTLE_REGION`), and prefer `global.`
 inference profiles: they are priced at Anthropic list; `us.` profiles cost
 10% more. Probe once, paste both lines.
 
+## Bedrock (OpenAI family)
+
+OpenAI's proprietary models are on Bedrock too (gpt-6-astra, gpt-5.6
+sol/terra/luna as of 2026-09), served through Bedrock's OpenAI Responses wire
+(`bedrock-runtime.<region>.amazonaws.com/openai/v1`, SigV4). The same
+adapter serves them; only the host, the auth, and the model id change.
+
+```bash
+uv run python scripts/probe_backends.py openai
+```
+
+prints the models your account can invoke:
+
+```env
+MLPAL_BEDROCK_OPENAI_MODELS='{"gpt-6-astra": "global.openai.gpt-6-astra", ...}'
+MLPAL_OPENAI_BACKENDS=bedrock,first_party
+```
+
+Only mapped models ride Bedrock; every other OpenAI model (gpt-4.1, images,
+embeddings, audio) stays first-party. `global.` profiles are priced at OpenAI
+list, so the meter is unchanged. Verified on this wire: reasoning effort,
+tools, structured output, streaming, and automatic prompt caching with the
+same cached-token accounting as OpenAI. Two wire differences are absorbed by
+the gateway: `https://` image URLs are fetched once and delivered inline
+(Bedrock accepts only `data:`/`s3://`), and requests carrying URL-addressed
+MCP servers are served from the next backend in the list (Bedrock wants
+connector ARNs). Contexts above 272K tokens cost more on Bedrock than at
+OpenAI list; the catalog bills list.
+
 ## Changing priorities at runtime (no restart)
 
 Backend **priorities** are runtime-overridable: the console's Settings page

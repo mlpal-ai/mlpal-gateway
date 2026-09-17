@@ -424,7 +424,12 @@ class OpenAIAdapter(BaseAdapter):
         max_output_tokens=16384,
     )
 
-    def __init__(self, api_key: str | None = None, base_url: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        http_client: httpx.AsyncClient | None = None,
+    ) -> None:
         if api_key:
             self._api_key = api_key
         else:
@@ -434,11 +439,13 @@ class OpenAIAdapter(BaseAdapter):
         # Create client with connection pooling. Ceiling on simultaneous in-flight
         # requests to OpenAI across ALL callers — raised for client concurrency.
         # base_url seam lets serving backends (Azure /openai/v1) reuse this
-        # adapter unchanged — the v1 surface is OpenAI-wire-compatible.
-        http_client = httpx.AsyncClient(
-            limits=httpx.Limits(max_connections=300, max_keepalive_connections=60),
-            timeout=httpx.Timeout(120.0, connect=10.0),
-        )
+        # adapter unchanged — the v1 surface is OpenAI-wire-compatible; the
+        # http_client seam lets a backend bring its own auth (Bedrock SigV4).
+        if http_client is None:
+            http_client = httpx.AsyncClient(
+                limits=httpx.Limits(max_connections=300, max_keepalive_connections=60),
+                timeout=httpx.Timeout(120.0, connect=10.0),
+            )
         self._base_url = base_url
         self._client = AsyncOpenAI(
             api_key=self._api_key,
@@ -1569,8 +1576,21 @@ class OpenAIAdapter(BaseAdapter):
         "gpt-6-astra",
     )
 
+    _CLOUD_PREFIXES = ("global.openai.", "us.openai.", "openai.")
+
+    @classmethod
+    def canonical_model_id(cls, model: str) -> str:
+        """The OpenAI model id behind a serving backend's wire id — Bedrock
+        addresses these models as `global.openai.<id>` inference profiles;
+        per-model rules must match the bare id."""
+        for prefix in cls._CLOUD_PREFIXES:
+            if model.startswith(prefix):
+                return model[len(prefix):]
+        return model
+
     def _model_skips_sampling_params(self, model: str) -> bool:
         """Check if model doesn't support temperature/top_p."""
+        model = self.canonical_model_id(model)
         # Check exact matches first (for gpt-5 family where prefix matching is problematic)
         if model in self._NO_SAMPLING_EXACT:
             return True

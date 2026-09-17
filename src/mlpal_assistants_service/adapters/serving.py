@@ -78,6 +78,146 @@ class AzureOpenAIAdapter(OpenAIAdapter):
         return self._deployments.get(provider_model_id, provider_model_id)
 
 
+class BedrockOpenAIAdapter(OpenAIAdapter):
+    """OpenAI proprietary models (gpt-6-astra, gpt-5.6 sol/terra/luna) via
+    Bedrock's OpenAI Responses wire: `bedrock-runtime.<region>/openai/v1`,
+    SigV4 instead of a bearer key, model = inference-profile id from the
+    explicit MLPAL_BEDROCK_OPENAI_MODELS map. Verified 2026-09-17 against
+    the adapter's parameter shapes: reasoning effort, tools, structured
+    output, streaming, automatic prompt caching with OpenAI-identical
+    accounting, store=false. Not on this wire: URL-addressed MCP servers
+    (connector ARNs only) and `https://` image URLs (data:/s3:// only)."""
+
+    backend_name = "bedrock"
+    supports_mcp_passthrough = False
+
+    def __init__(self) -> None:
+        from mlpal_assistants_service.adapters.aws_sigv4 import SigV4HttpxAuth
+
+        settings = get_settings()
+        self._model_map = _parse_map(
+            settings.bedrock_openai_models, "MLPAL_BEDROCK_OPENAI_MODELS"
+        )
+        if not self._model_map:
+            raise RuntimeError(
+                "Bedrock OpenAI backend requires MLPAL_BEDROCK_OPENAI_MODELS "
+                "(run scripts/probe_backends.py openai to generate it)"
+            )
+        region = settings.bedrock_mantle_region
+        super().__init__(
+            api_key="unused-sigv4",
+            base_url=f"https://bedrock-runtime.{region}.amazonaws.com/openai/v1/",
+            http_client=httpx.AsyncClient(
+                auth=SigV4HttpxAuth(region),
+                limits=httpx.Limits(max_connections=300, max_keepalive_connections=60),
+                timeout=httpx.Timeout(120.0, connect=10.0),
+            ),
+        )
+
+    def serves(self, provider_model_id: str) -> bool:
+        return provider_model_id in self._model_map
+
+    def backend_model_id(self, provider_model_id: str) -> str:
+        return self._model_map[provider_model_id]
+
+    # Bedrock's OpenAI wire rejects `https://` image/file URLs (data: or
+    # s3:// only). First-party OpenAI fetches them itself; here we do, once,
+    # bounded, and hand the model the same bytes inline. Same request shape
+    # as the parent — only the attachment source changes.
+    _REMOTE_FETCH_TIMEOUT = 15.0
+    _REMOTE_FETCH_MAX_BYTES = 20 * 1024 * 1024
+
+    async def chat(self, model, messages, *args, **kwargs):
+        messages = await self._inline_remote_files(messages)
+        return await super().chat(model, messages, *args, **kwargs)
+
+    async def chat_stream(self, model, messages, *args, **kwargs):
+        messages = await self._inline_remote_files(messages)
+        async for chunk in super().chat_stream(model, messages, *args, **kwargs):
+            yield chunk
+
+    async def _inline_remote_files(self, messages: list[dict]) -> list[dict]:
+        import base64
+        import copy
+
+        from mlpal_assistants_service.adapters.base import FileAttachment, FileSource
+        from mlpal_assistants_service.core.exceptions import ProviderError
+
+        def _is_http(v: object) -> bool:
+            return isinstance(v, str) and v.startswith(("http://", "https://"))
+
+        async def _fetch(client: httpx.AsyncClient, url: str) -> tuple[str, str]:
+            try:
+                async with client.stream("GET", url) as r:
+                    r.raise_for_status()
+                    buf = bytearray()
+                    async for part in r.aiter_bytes():
+                        buf += part
+                        if len(buf) > self._REMOTE_FETCH_MAX_BYTES:
+                            raise ProviderError(
+                                f"remote file too large for inline delivery (> "
+                                f"{self._REMOTE_FETCH_MAX_BYTES} bytes): {url}",
+                                provider="openai", status_code=400,
+                            )
+                    mime = (r.headers.get("content-type") or "application/octet-stream").split(";")[0]
+            except httpx.HTTPError as e:
+                raise ProviderError(
+                    f"could not fetch remote file {url}: {e}", provider="openai", status_code=400
+                ) from e
+            return base64.b64encode(bytes(buf)).decode(), mime
+
+        needs = any(
+            (isinstance(f, FileAttachment) and f.source == FileSource.URL)
+            or (isinstance(f, dict) and _is_http(f.get("url")))
+            for m in messages
+            for key in ("files", "images", "documents")
+            for f in (m.get(key) or [])
+        ) or any(
+            isinstance(part, dict) and (
+                _is_http(part.get("image_url"))
+                or _is_http((part.get("image_url") or {}).get("url") if isinstance(part.get("image_url"), dict) else None)
+            )
+            for m in messages
+            if isinstance(m.get("content"), list)
+            for part in m["content"]
+        )
+        if not needs:
+            return messages
+        out = copy.deepcopy(messages)
+        async with httpx.AsyncClient(
+            timeout=self._REMOTE_FETCH_TIMEOUT, follow_redirects=True
+        ) as client:
+            for m in out:
+                for key in ("files", "images", "documents"):
+                    items = m.get(key) or []
+                    for i, f in enumerate(items):
+                        if isinstance(f, FileAttachment) and f.source == FileSource.URL:
+                            data, mime = await _fetch(client, f.data)
+                            items[i] = FileAttachment(
+                                type=f.type, source=FileSource.BASE64, data=data,
+                                mime_type=f.mime_type or mime, filename=f.filename,
+                            )
+                        elif isinstance(f, dict) and _is_http(f.get("url")):
+                            data, mime = await _fetch(client, f["url"])
+                            f.pop("url")
+                            f["base64"] = data
+                            f.setdefault("mime_type", mime)
+                if isinstance(m.get("content"), list):
+                    for part in m["content"]:
+                        if not isinstance(part, dict):
+                            continue
+                        ref = part.get("image_url")
+                        url = ref if _is_http(ref) else (ref or {}).get("url") if isinstance(ref, dict) else None
+                        if _is_http(url):
+                            data, mime = await _fetch(client, url)
+                            inline = f"data:{mime};base64,{data}"
+                            if isinstance(ref, dict):
+                                ref["url"] = inline
+                            else:
+                                part["image_url"] = inline
+        return out
+
+
 class VertexGoogleAdapter(GoogleAdapter):
     """Gemini via Vertex AI. Same google-genai SDK, same model IDs — only the
     client constructor differs (ADC auth via GOOGLE_APPLICATION_CREDENTIALS)."""

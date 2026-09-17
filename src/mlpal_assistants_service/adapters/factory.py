@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # Families that support serving backends, and the valid backend names for
 # each. `first_party` is always valid and always the default.
 FAMILY_BACKENDS: dict[str, tuple[str, ...]] = {
-    "openai": ("first_party", "azure"),
+    "openai": ("first_party", "azure", "bedrock"),
     "google": ("first_party", "vertex"),
     "anthropic": ("first_party", "bedrock", "vertex", "azure"),
 }
@@ -80,6 +80,7 @@ class AdapterFactory:
             AzureAnthropicAdapter,
             AzureOpenAIAdapter,
             BedrockAnthropicAdapter,
+            BedrockOpenAIAdapter,
             VertexAnthropicAdapter,
             VertexGoogleAdapter,
         )
@@ -92,6 +93,7 @@ class AdapterFactory:
         }
         self._backend_classes = {
             ("openai", "azure"): AzureOpenAIAdapter,
+            ("openai", "bedrock"): BedrockOpenAIAdapter,
             ("anthropic", "azure"): AzureAnthropicAdapter,
             ("google", "vertex"): VertexGoogleAdapter,
             ("anthropic", "bedrock"): BedrockAnthropicAdapter,

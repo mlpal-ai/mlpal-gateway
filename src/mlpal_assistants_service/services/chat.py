@@ -624,6 +624,20 @@ class ChatService:
                     operation="chat",
                     exclude_backends=exclude_backends,
                 )
+                if request.mcp_servers and not adapter.supports_mcp_passthrough:
+                    # e.g. Bedrock's OpenAI wire takes connector ARNs, not
+                    # URLs: serve this request from the next backend instead.
+                    (
+                        adapter,
+                        provider_model_id,
+                        breaker,
+                        model_info,
+                        routing_metadata,
+                    ) = await self._router.get_adapter_with_breaker_for_operation(
+                        request.model,
+                        operation="chat",
+                        exclude_backends=exclude_backends | {adapter.backend_name},
+                    )
 
             # byok: a tenant credential for this family outranks deployment
             # credentials. Tenant adapters run OUTSIDE the shared circuit
@@ -1007,6 +1021,20 @@ class ChatService:
                     operation="chat",
                     exclude_backends=exclude_backends,
                 )
+                if request.mcp_servers and not adapter.supports_mcp_passthrough:
+                    # e.g. Bedrock's OpenAI wire takes connector ARNs, not
+                    # URLs: serve this request from the next backend instead.
+                    (
+                        adapter,
+                        provider_model_id,
+                        breaker,
+                        model_info,
+                        routing_metadata,
+                    ) = await self._router.get_adapter_with_breaker_for_operation(
+                        request.model,
+                        operation="chat",
+                        exclude_backends=exclude_backends | {adapter.backend_name},
+                    )
 
             # byok: a tenant credential for this family outranks deployment
             # credentials. Tenant adapters run OUTSIDE the shared circuit
