@@ -31,7 +31,7 @@ from mlpal_assistants_service.core.exceptions import (
 )
 from mlpal_assistants_service.core.metrics import get_metrics
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
-from mlpal_assistants_service.services.messages_v2.anthropic_backend import get_anthropic_backend
+from mlpal_assistants_service.services.messages_v2.anthropic_backend import native_backend_for
 from mlpal_assistants_service.services.messages_v2.anthropic_edge import AnthropicEdge
 from mlpal_assistants_service.services.messages_v2.edges import ProviderEdge, RequestContext
 from mlpal_assistants_service.services.messages_v2.errors import error_body
@@ -131,8 +131,8 @@ class MessagesV2Core:
         adapter's backend_name (first_party / azure / vertex / bedrock)."""
         if model.provider == "anthropic":
             try:
-                backend = get_anthropic_backend(self._settings)
-                if backend.serves(model.provider_model_id):
+                backend = native_backend_for(self._settings, model.provider_model_id)
+                if backend is not None:
                     return backend.name
             except ValueError:
                 pass
@@ -147,15 +147,14 @@ class MessagesV2Core:
     def _edge_for(self, model) -> ProviderEdge:
         provider = model.provider
         if provider == "anthropic":
-            # Native path (byte-faithful) when a native backend serves this
-            # model: first-party serves everything; bedrock-mantle only its
-            # allowlist. Otherwise fall back to the adapter path — the factory
-            # priority picks the serving backend (bedrock SDK, vertex).
-            try:
-                backend = get_anthropic_backend(self._settings)
-            except ValueError:
-                backend = None
-            if backend is not None and backend.serves(model.provider_model_id):
+            # Native path (byte-faithful) via the FIRST configured native
+            # backend that serves this model, in MLPAL_ANTHROPIC_BACKENDS
+            # order: bedrock-mantle only its allowlist, first-party everything.
+            # Only when none does (a model neither native backend has) fall
+            # back to the adapter path, where the factory priority picks the
+            # serving backend (bedrock SDK, vertex).
+            backend = native_backend_for(self._settings, model.provider_model_id)
+            if backend is not None:
                 return AnthropicEdge(backend)
             return self._translating_edge(provider, model.provider_model_id)
         if provider in ("openai", "google", "bedrock"):

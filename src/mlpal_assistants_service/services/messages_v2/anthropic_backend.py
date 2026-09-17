@@ -135,6 +135,59 @@ class AnthropicAzureBackend:
         return body, h
 
 
+NativeBackend = AnthropicFirstPartyBackend | AnthropicBedrockBackend | AnthropicAzureBackend
+_backend_lists: dict[tuple, list] = {}
+
+
+def native_backends(settings: Settings) -> list[NativeBackend]:
+    """Every configured native-path backend in MLPAL_ANTHROPIC_BACKENDS
+    priority order. A native backend only takes a model it SERVES (bedrock:
+    its mantle allowlist; first_party: everything), so callers walk this list
+    and fall through — e.g. `bedrock,first_party` keeps first-party's
+    byte-faithful passthrough for models the mantle endpoint lacks instead of
+    dropping them onto the lossy translating edge."""
+    key = (
+        settings.anthropic_backends,
+        settings.anthropic_api_key,
+        settings.anthropic_base_url,
+        settings.bedrock_mantle_region,
+        settings.bedrock_mantle_models,
+        settings.azure_openai_endpoint,
+        settings.azure_anthropic_deployments,
+    )
+    hit = _backend_lists.get(key)
+    if hit is not None:
+        return hit
+    out: list[NativeBackend] = []
+    for name in (n.strip() for n in settings.anthropic_backends.split(",")):
+        if name == "first_party" and settings.anthropic_api_key:
+            out.append(AnthropicFirstPartyBackend(settings))
+        elif name == "bedrock":
+            out.append(AnthropicBedrockBackend(settings))
+        elif name == "azure" and settings.azure_openai_endpoint and settings.azure_openai_api_key:
+            out.append(AnthropicAzureBackend(settings))
+    _backend_lists[key] = out
+    return out
+
+
+def native_backend_for(settings: Settings, provider_model_id: str) -> NativeBackend | None:
+    """First configured native backend that serves this model, else None
+    (→ adapter path)."""
+    for backend in native_backends(settings):
+        if backend.serves(provider_model_id):
+            return backend
+    return None
+
+
+def count_tokens_backend(settings: Settings) -> NativeBackend | None:
+    """First native backend with a count_tokens surface. Bedrock (mantle) has
+    none, so with `bedrock,first_party` counting still goes first-party."""
+    for backend in native_backends(settings):
+        if backend.name != "bedrock" and backend.url.endswith("/v1/messages"):
+            return backend
+    return None
+
+
 def get_anthropic_backend(
     settings: Settings,
 ) -> AnthropicFirstPartyBackend | AnthropicBedrockBackend | AnthropicAzureBackend:

@@ -97,9 +97,24 @@ class AnthropicAdapter(BaseAdapter):
         "claude-mythos-5",
     )
 
+    @staticmethod
+    def canonical_model_id(model: str) -> str:
+        """Strip cloud-backend decoration so per-model rules match the same
+        Claude everywhere: Bedrock inference profiles look like
+        `global.anthropic.claude-opus-5` / `us.anthropic.claude-…-v1:0`,
+        Vertex like `claude-opus-5@20260801`. Returns the bare `claude-…` id."""
+        m = model
+        if ".anthropic." in m:
+            m = m.split(".anthropic.", 1)[1]
+        elif m.startswith("anthropic."):
+            m = m[len("anthropic."):]
+        return m.split("@", 1)[0]
+
     def _skips_temperature(self, model: str) -> bool:
-        """Whether this model rejects the `temperature` parameter."""
-        return any(model.startswith(p) for p in self._NO_TEMPERATURE_PREFIXES)
+        """Whether this model rejects the `temperature` parameter (Bedrock
+        returns 400 "`temperature` is deprecated for this model")."""
+        m = self.canonical_model_id(model)
+        return any(m.startswith(p) for p in self._NO_TEMPERATURE_PREFIXES)
 
     # Model capabilities registry
     MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
@@ -238,6 +253,7 @@ class AnthropicAdapter(BaseAdapter):
 
     def get_model_capabilities(self, model: str) -> ModelCapabilities:
         """Get capabilities for a specific Anthropic model."""
+        model = self.canonical_model_id(model)
         # Check exact match first
         if model in self.MODEL_CAPABILITIES:
             return self.MODEL_CAPABILITIES[model]

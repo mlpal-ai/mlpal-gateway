@@ -173,7 +173,7 @@ async def count_tokens_v2(
 
     from mlpal_assistants_service.core.config import get_settings
     from mlpal_assistants_service.services.messages_v2.anthropic_backend import (
-        get_anthropic_backend,
+        count_tokens_backend,
     )
 
     raw = await request.body()
@@ -195,14 +195,13 @@ async def count_tokens_v2(
             400,
             media_type="application/json",
         )
-    try:
-        backend = get_anthropic_backend(get_settings())
-    except ValueError as e:
-        return Response(error_body(503, str(e)), 503, media_type="application/json")
-    if not backend.url.endswith("/v1/messages") or backend.name == "bedrock":
-        # Mantle has no count_tokens surface; adapter-path models likewise.
+    # Counting is a first-party (or Azure-native) surface: Bedrock/mantle has
+    # none, so pick the first native backend that can count even when Bedrock
+    # leads the priority list for inference.
+    backend = count_tokens_backend(get_settings())
+    if backend is None:
         return Response(
-            error_body(501, f"count_tokens is not supported by the '{backend.name}' backend"),
+            error_body(501, "count_tokens is not supported by any configured Anthropic backend"),
             501,
             media_type="application/json",
         )

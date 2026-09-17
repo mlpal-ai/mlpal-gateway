@@ -157,8 +157,15 @@ Two Bedrock paths exist and their model populations differ:
   wider model coverage; `/v1/messages` still works via translation, plus all
   OpenAI-wire endpoints.
 
-The gateway picks the native path when the model is on the mantle list and
-falls back to the adapter path automatically. Probe once, paste both lines.
+The gateway walks `MLPAL_ANTHROPIC_BACKENDS` in order and takes the FIRST
+native backend that serves the model (mantle: its allowlist; first_party:
+everything), so `bedrock,first_party` with an empty mantle list keeps the
+Anthropic wire byte-faithful on first-party while the OpenAI wire's adapter
+path serves the mapped models from Bedrock. `count_tokens` always uses a
+backend that can count (Bedrock cannot). Probe with the region your account
+has model access in (`MLPAL_BEDROCK_MANTLE_REGION`), and prefer `global.`
+inference profiles: they are priced at Anthropic list; `us.` profiles cost
+10% more. Probe once, paste both lines.
 
 ## Changing priorities at runtime (no restart)
 
