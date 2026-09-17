@@ -190,10 +190,15 @@ def native_backends(settings: Settings) -> list[NativeBackend]:
     return out
 
 
-def native_backend_for(settings: Settings, provider_model_id: str) -> NativeBackend | None:
+def native_backend_for(
+    settings: Settings, provider_model_id: str, exclude: frozenset[str] = frozenset()
+) -> NativeBackend | None:
     """First configured native backend that serves this model, else None
-    (→ adapter path)."""
+    (→ adapter path). `exclude` skips backends by name (backend failover:
+    the same model on the next native backend)."""
     for backend in native_backends(settings):
+        if backend.name in exclude:
+            continue
         if backend.serves(provider_model_id):
             return backend
     return None

@@ -24,7 +24,11 @@ from mlpal_assistants_service.core.exceptions import (
     UnsupportedModelKwargsError,
 )
 from mlpal_assistants_service.services.messages_v2 import emit
-from mlpal_assistants_service.services.messages_v2.edges import EdgeResult, RequestContext
+from mlpal_assistants_service.services.messages_v2.edges import (
+    EdgeResult,
+    RequestContext,
+    UpstreamRefused,
+)
 from mlpal_assistants_service.services.messages_v2.errors import error_body
 from mlpal_assistants_service.services.messages_v2.schemas import ValidatedRequest
 from mlpal_assistants_service.services.messages_v2.translate_in import (
@@ -149,18 +153,23 @@ class TranslatingEdge:
             ctx.empty_completion = empty_completion
             ctx.report(CanonicalUsage.from_openai(usage) if usage else None, 200, message_id)
 
+        emitted = False
         try:
             _, kwargs = self._prepare(req, ctx)
             chunks = self._adapter.chat_stream(
                 **kwargs, stream_thinking=get_settings().messages_v2_stream_thinking
             )
             async for sse_bytes in emit.stream_anthropic_sse(chunks, message_id, ctx.model_tag, _on_final):
+                emitted = True
                 yield sse_bytes
         except Exception as e:  # noqa: BLE001
             status = _error_status(e)
             ctx.report(None, status, message_id)
             logger.warning(f"[v2.messages] translate stream error trace={ctx.trace_id} status={status}: {e}")
-            yield b"event: error\ndata: " + error_body(status, str(e)) + b"\n\n"
+            body = error_body(status, str(e))
+            if not emitted:
+                raise UpstreamRefused(status, body) from e
+            yield b"event: error\ndata: " + body + b"\n\n"
             return
         # A clean stream that never surfaced usage still needs a billing report.
         if "usage" not in reported:

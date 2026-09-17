@@ -328,3 +328,16 @@ def with_circuit_breaker(
 
         return wrapper
     return decorator
+
+
+_registry: CircuitBreakerRegistry | None = None
+
+
+def get_circuit_breaker_registry() -> CircuitBreakerRegistry:
+    """The process-wide registry. Routers are built per request; a breaker
+    only means something if its failure count outlives the request that
+    tripped it, so every router shares this one instance."""
+    global _registry
+    if _registry is None:
+        _registry = CircuitBreakerRegistry()
+    return _registry

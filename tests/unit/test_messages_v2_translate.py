@@ -343,7 +343,7 @@ def _openai_core(monkeypatch, adapter):
     billing.is_wallet_debit_active = AsyncMock(return_value=True)
     billing.debit_wallet_usage = AsyncMock()
     monkeypatch.setattr(core_mod, "get_adapter_factory",
-                        lambda: SimpleNamespace(get=lambda provider: adapter, resolve=lambda provider, pmid: (adapter, pmid)))
+                        lambda: SimpleNamespace(get=lambda provider: adapter, resolve=lambda provider, pmid, exclude=frozenset(): (adapter, pmid)))
     return MessagesV2Core(router, usage, pricing, billing), usage, billing
 
 
@@ -371,7 +371,7 @@ def _bedrock_core(monkeypatch, adapter):
     billing.is_wallet_debit_active = AsyncMock(return_value=True)
     billing.debit_wallet_usage = AsyncMock()
     monkeypatch.setattr(core_mod, "get_adapter_factory",
-                        lambda: SimpleNamespace(get=lambda provider: adapter, resolve=lambda provider, pmid: (adapter, pmid)))
+                        lambda: SimpleNamespace(get=lambda provider: adapter, resolve=lambda provider, pmid, exclude=frozenset(): (adapter, pmid)))
     return MessagesV2Core(router, usage, pricing, billing), usage, billing
 
 
@@ -671,7 +671,7 @@ async def test_google_edge_sanitizes_tool_schema(monkeypatch):
     billing.is_wallet_debit_active = AsyncMock(return_value=True)
     billing.debit_wallet_usage = AsyncMock()
     monkeypatch.setattr(core_mod, "get_adapter_factory",
-                        lambda: SimpleNamespace(get=lambda provider: adapter, resolve=lambda provider, pmid: (adapter, pmid)))
+                        lambda: SimpleNamespace(get=lambda provider: adapter, resolve=lambda provider, pmid, exclude=frozenset(): (adapter, pmid)))
     core = MessagesV2Core(router, usage, pricing, billing)
     req = validate(json.dumps({
         "model": "gemini-3.5-flash",

@@ -93,10 +93,10 @@ async def test_set_value_clears_factory_resolution(monkeypatch):
     f = AdapterFactory()
     f.clear_instances()
     f.resolve("openai", "gpt-5.2")
-    assert ("openai", "gpt-5.2") in f._resolution
+    assert ("openai", "gpt-5.2", frozenset()) in f._resolution
 
     await runtime_settings.set_value(None, "openai_backends", "first_party")
-    assert ("openai", "gpt-5.2") not in f._resolution
+    assert ("openai", "gpt-5.2", frozenset()) not in f._resolution
     f.clear_instances()
 
 

@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mlpal_assistants_service.adapters.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerRegistry,
+    get_circuit_breaker_registry,
 )
 from mlpal_assistants_service.adapters.factory import AdapterFactory, get_adapter_factory
 from mlpal_assistants_service.core.cache import TTLCache
@@ -87,7 +88,7 @@ class ModelRouter:
         self._model_repo = ModelRepository(session)
         self._meta_routing_repo = MetaRoutingRepository(session)
         self._adapter_factory = adapter_factory or get_adapter_factory()
-        self._circuit_breakers = circuit_breaker_registry or CircuitBreakerRegistry()
+        self._circuit_breakers = circuit_breaker_registry or get_circuit_breaker_registry()
         self._local_cache: TTLCache = TTLCache(
             default_ttl=self._settings.local_cache_ttl,
             maxsize=self._settings.local_cache_maxsize,
@@ -180,17 +181,38 @@ class ModelRouter:
         model = await self.get_model(model_tag)
         return self._resolve_backend(model)
 
-    def _resolve_backend(self, model: "ModelRegistry") -> tuple["BaseAdapter", str]:
+    def _resolve_backend(
+        self, model: "ModelRegistry", exclude: frozenset[str] = frozenset()
+    ) -> tuple["BaseAdapter", str]:
         """Backend-aware adapter selection: the factory walks the family's
         MLPAL_<FAMILY>_BACKENDS priority list (cached — dict lookup on the
-        hot path) and returns the adapter plus the wire model ID for it."""
+        hot path) and returns the adapter plus the wire model ID for it.
+        `exclude` names backends to skip (backend failover)."""
         try:
-            return self._adapter_factory.resolve(model.provider, model.provider_model_id)
+            return self._adapter_factory.resolve(
+                model.provider, model.provider_model_id, exclude
+            )
         except (ValueError, RuntimeError) as e:
             raise ModelNotAvailableError(
                 model.model_tag,
                 f"No serving backend available for {model.provider}: {e}",
             )
+
+    def resolve_backend(
+        self, model: "ModelRegistry", exclude: frozenset[str] = frozenset()
+    ) -> tuple["BaseAdapter", str]:
+        """Public form of `_resolve_backend` for failover planning."""
+        return self._resolve_backend(model, exclude)
+
+    async def breaker_for(self, family: str, backend_name: str) -> CircuitBreaker:
+        """Circuit breakers are PER BACKEND (`anthropic:bedrock`,
+        `anthropic:first_party`): a failing backend trips only its own breaker,
+        so the same model keeps serving from the next backend."""
+        return await self._circuit_breakers.get(f"{family}:{backend_name}")
+
+    @property
+    def circuit_breakers(self) -> CircuitBreakerRegistry:
+        return self._circuit_breakers
 
     async def get_adapter_with_breaker(
         self,
@@ -212,7 +234,7 @@ class ModelRouter:
         """
         model = await self.get_model(model_tag)
         adapter, wire_model_id = self._resolve_backend(model)
-        breaker = await self._circuit_breakers.get(model.provider)
+        breaker = await self.breaker_for(model.provider, adapter.backend_name)
 
         return adapter, wire_model_id, breaker
 
@@ -236,24 +258,26 @@ class ModelRouter:
             ModelNotAvailableError: If no adapter available (including fallback)
         """
         model = await self.get_model(model_tag)
-        breaker = await self._circuit_breakers.get(model.provider)
 
         # Check if primary provider is available
-        if not breaker.is_open:
-            try:
-                adapter, wire_model_id = self._resolve_backend(model)
+        try:
+            adapter, wire_model_id = self._resolve_backend(model)
+            breaker = await self.breaker_for(model.provider, adapter.backend_name)
+            if not breaker.is_open:
                 return adapter, wire_model_id, model
-            except ModelNotAvailableError:
-                pass  # Try fallback
+        except ModelNotAvailableError:
+            pass  # Try fallback
 
         # Primary is unavailable, try fallback
         if model.fallback_model_tag:
             try:
                 fallback_model = await self.get_model(model.fallback_model_tag)
-                fallback_breaker = await self._circuit_breakers.get(fallback_model.provider)
+                adapter, wire_model_id = self._resolve_backend(fallback_model)
+                fallback_breaker = await self.breaker_for(
+                    fallback_model.provider, adapter.backend_name
+                )
 
                 if not fallback_breaker.is_open:
-                    adapter, wire_model_id = self._resolve_backend(fallback_model)
                     logger.info(
                         f"Using fallback model {fallback_model.model_tag} "
                         f"for {model_tag} (primary circuit open)"
@@ -494,6 +518,7 @@ class ModelRouter:
         self,
         model_tag: str,
         operation: str,
+        exclude_backends: frozenset[str] = frozenset(),
     ) -> tuple["BaseAdapter", str, CircuitBreaker, ModelRegistry, RoutingMetadata | None]:
         """
         Get adapter with circuit breaker, resolving meta-models based on operation.
@@ -515,9 +540,9 @@ class ModelRouter:
         if routing_metadata:
             routing_metadata.resolved_provider = model.provider
 
-        # Get adapter and circuit breaker
-        adapter, wire_model_id = self._resolve_backend(model)
-        breaker = await self._circuit_breakers.get(model.provider)
+        # Get adapter and its per-backend circuit breaker
+        adapter, wire_model_id = self._resolve_backend(model, exclude_backends)
+        breaker = await self.breaker_for(model.provider, adapter.backend_name)
 
         return adapter, wire_model_id, breaker, model, routing_metadata
 

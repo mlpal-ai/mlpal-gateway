@@ -24,6 +24,7 @@ import logging
 import time
 import uuid
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
@@ -36,6 +37,7 @@ from mlpal_assistants_service.adapters import (
 from mlpal_assistants_service.adapters.base import TokenUsage as AdapterTokenUsage
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
+    ModelNotAvailableError,
     ModelNotFoundError,
     ProviderError,
     QuotaExceededError,
@@ -74,6 +76,17 @@ from mlpal_assistants_service.services.router import ModelRouter
 from mlpal_assistants_service.services.usage import UsageService
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _Attempt:
+    """What one `_chat_once` attempt resolved to, filled in right after
+    backend selection so the failover wrapper can plan a hop even though the
+    attempt raised."""
+
+    model: Any = None            # ModelRegistry (None: byom / not reached)
+    backend: str | None = None   # adapter.backend_name that served
+    conn_served: bool = False    # a tenant connection served it — no hop
 
 
 class _NullBreaker:
@@ -198,6 +211,7 @@ class ChatService:
         serving_backend: str | None = None,
         conn_kind: str | None = None,
         byom_usd: Decimal | None = None,
+        backend_fallback_from: str | None = None,
     ) -> None:
         """Background task for post-provider steps.
 
@@ -236,6 +250,11 @@ class ChatService:
                     cc_metadata=(
                         {
                             **({"serving_backend": serving_backend} if serving_backend else {}),
+                            **(
+                                {"backend_fallback_from": backend_fallback_from}
+                                if backend_fallback_from
+                                else {}
+                            ),
                             # Free-tier accrual subtracts cache reads by this key
                             # (input_tokens is the full prompt incl. cached).
                             **(
@@ -318,9 +337,15 @@ class ChatService:
 
         if isinstance(e, (ModelNotFoundError, ModelNotAvailableError)):
             return True  # a fallback candidate may be misspelled/retired — skip it
+        if isinstance(e, CircuitBreakerOpen):
+            return True  # per-backend breaker: the next backend may be healthy
         code = getattr(e, "status_code", None)
         if isinstance(code, int):
             return code == 429 or code >= 500
+        if isinstance(e, ProviderError):
+            # Adapters wrap SDK failures as ProviderError; no status means the
+            # provider never answered (connection/DNS/timeout) — retriable.
+            return True
         if isinstance(e, (TimeoutError, ConnectionError)):
             return True
         # provider SDK transport errors (openai.APIConnectionError,
@@ -356,7 +381,7 @@ class ChatService:
         for i, tag in enumerate(candidates):
             req = request if i == 0 else request.model_copy(update={"model": tag})
             try:
-                response = await self._chat_once(
+                response = await self._chat_with_backend_failover(
                     user_id, api_key_id, req, tier, model_policy, budgets,
                     capture_policy=capture_policy,
                 )
@@ -392,7 +417,7 @@ class ChatService:
             req = request if i == 0 else request.model_copy(update={"model": tag})
             emitted = False
             try:
-                async for chunk in self._chat_stream_once(
+                async for chunk in self._chat_stream_with_backend_failover(
                     user_id, api_key_id, req, tier, model_policy, budgets,
                     capture_policy=capture_policy,
                 ):
@@ -408,6 +433,99 @@ class ChatService:
                     continue
                 raise
 
+    async def _backend_hop(self, attempt: "_Attempt") -> str | None:
+        """After a retriable failure: the backend to exclude on a same-model
+        retry, or None when no hop applies — failover off, the attempt never
+        reached a deployment backend (policy/billing rejected it first, or a
+        tenant connection served it — their credential, their outage), or no
+        other configured backend serves the model."""
+        if not getattr(get_settings(), "backend_failover_enabled", True):
+            return None
+        if attempt.model is None or attempt.backend is None or attempt.conn_served:
+            return None
+        try:
+            self._router.resolve_backend(attempt.model, frozenset({attempt.backend}))
+        except ModelNotAvailableError:
+            return None
+        return attempt.backend
+
+    async def _chat_with_backend_failover(
+        self,
+        user_id: int,
+        api_key_id: int,
+        request: ChatCompletionRequest,
+        tier: str,
+        model_policy: dict | None,
+        budgets: list | None,
+        *,
+        capture_policy: dict | None,
+    ) -> ChatCompletionResponse:
+        """One request, up to two backends: a serving fault on the backend
+        that served the model retries the SAME model once on the next backend
+        in the family's priority list (`metadata.backend_fallback_from`).
+        Client errors are never retried; the retry's own failure propagates
+        to the model-fallback chain."""
+        attempt = _Attempt()
+        try:
+            return await self._chat_once(
+                user_id, api_key_id, request, tier, model_policy, budgets,
+                capture_policy=capture_policy, attempt=attempt,
+            )
+        except Exception as e:  # noqa: BLE001 — classified by _retriable
+            if not self._retriable(e):
+                raise
+            failed = await self._backend_hop(attempt)
+            if failed is None:
+                raise
+            logger.warning(
+                "backend_failover: model=%s from=%s error=%s — retrying on next backend",
+                request.model, failed, type(e).__name__,
+            )
+        return await self._chat_once(
+            user_id, api_key_id, request, tier, model_policy, budgets,
+            capture_policy=capture_policy, exclude_backends=frozenset({failed}),
+        )
+
+    async def _chat_stream_with_backend_failover(
+        self,
+        user_id: int,
+        api_key_id: int,
+        request: ChatCompletionRequest,
+        tier: str,
+        model_policy: dict | None,
+        budgets: list | None,
+        *,
+        capture_policy: dict | None,
+    ) -> AsyncIterator[StreamChunk]:
+        """Streaming twin of `_chat_with_backend_failover`: the hop happens
+        only while nothing has been emitted — once bytes are on the wire the
+        stream is committed to its backend."""
+        attempt = _Attempt()
+        emitted = False
+        try:
+            async for chunk in self._chat_stream_once(
+                user_id, api_key_id, request, tier, model_policy, budgets,
+                capture_policy=capture_policy, attempt=attempt,
+            ):
+                emitted = True
+                yield chunk
+            return
+        except Exception as e:  # noqa: BLE001 — classified by _retriable
+            if emitted or not self._retriable(e):
+                raise
+            failed = await self._backend_hop(attempt)
+            if failed is None:
+                raise
+            logger.warning(
+                "backend_failover(stream): model=%s from=%s error=%s — retrying on next backend",
+                request.model, failed, type(e).__name__,
+            )
+        async for chunk in self._chat_stream_once(
+            user_id, api_key_id, request, tier, model_policy, budgets,
+            capture_policy=capture_policy, exclude_backends=frozenset({failed}),
+        ):
+            yield chunk
+
     async def _chat_once(
         self,
         user_id: int,
@@ -417,6 +535,8 @@ class ChatService:
         model_policy: dict | None = None,
         budgets: list | None = None,
         capture_policy: dict | None = None,
+        exclude_backends: frozenset[str] = frozenset(),
+        attempt: "_Attempt | None" = None,
     ) -> ChatCompletionResponse:
         """
         Execute a chat completion request.
@@ -443,6 +563,7 @@ class ChatService:
         """
         trace_id = str(uuid.uuid4())
         start_time = time.perf_counter()
+        served_backend: str | None = None  # for failure-row attribution
 
         try:
             # 1. Check rate limits (pipelined — single Redis round-trip)
@@ -501,6 +622,7 @@ class ChatService:
                 ) = await self._router.get_adapter_with_breaker_for_operation(
                     request.model,
                     operation="chat",
+                    exclude_backends=exclude_backends,
                 )
 
             # byok: a tenant credential for this family outranks deployment
@@ -531,6 +653,11 @@ class ChatService:
                 if _tenant is not None:
                     adapter, provider_model_id, conn = _tenant
                     breaker = _NullBreaker()
+            served_backend = adapter.backend_name
+            if attempt is not None:
+                attempt.model = model_info if byom_ref is None else None
+                attempt.backend = served_backend
+                attempt.conn_served = conn is not None
 
             # For pricing/usage, use the resolved model if this was a meta-model
             resolved_model_tag = (
@@ -662,6 +789,7 @@ class ChatService:
                     ),
                     conn_kind=conn.kind if conn else None,
                     byom_usd=byom_usd,
+                    backend_fallback_from=next(iter(exclude_backends), None),
                 )
             )
 
@@ -696,6 +824,11 @@ class ChatService:
                 metadata={
                     "trace_id": trace_id,
                     "provider_model": provider_model_id,
+                    **(
+                        {"backend_fallback_from": next(iter(exclude_backends))}
+                        if exclude_backends
+                        else {}
+                    ),
                     **({"reasoning_effort": effort.as_metadata()} if effort.requested else {}),
                     **({"serving_credentials": conn.kind} if conn is not None else {}),
                     **(
@@ -727,6 +860,7 @@ class ChatService:
                 model_tag=request.model,
                 error_code="circuit_open",
                 start_time=start_time,
+                serving_backend=served_backend,
             )
             raise ProviderError(
                 message=f"Provider temporarily unavailable: {e}",
@@ -769,6 +903,7 @@ class ChatService:
                 model_tag=request.model,
                 error_code=error_code,
                 start_time=start_time,
+                serving_backend=served_backend,
                 error_detail=str(e),
             )
             raise
@@ -791,6 +926,8 @@ class ChatService:
         model_policy: dict | None = None,
         budgets: list | None = None,
         capture_policy: dict | None = None,
+        exclude_backends: frozenset[str] = frozenset(),
+        attempt: "_Attempt | None" = None,
     ) -> AsyncIterator[StreamChunk]:
         """
         Execute a streaming chat completion request.
@@ -809,6 +946,7 @@ class ChatService:
         """
         trace_id = str(uuid.uuid4())
         start_time = time.perf_counter()
+        served_backend: str | None = None  # for failure-row attribution
 
         try:
             # 1. Check rate limits
@@ -867,6 +1005,7 @@ class ChatService:
                 ) = await self._router.get_adapter_with_breaker_for_operation(
                     request.model,
                     operation="chat",
+                    exclude_backends=exclude_backends,
                 )
 
             # byok: a tenant credential for this family outranks deployment
@@ -897,6 +1036,11 @@ class ChatService:
                 if _tenant is not None:
                     adapter, provider_model_id, conn = _tenant
                     breaker = _NullBreaker()
+            served_backend = adapter.backend_name
+            if attempt is not None:
+                attempt.model = model_info if byom_ref is None else None
+                attempt.backend = served_backend
+                attempt.conn_served = conn is not None
 
             # For pricing/usage, use the resolved model if this was a meta-model
             resolved_model_tag = (
@@ -1033,6 +1177,7 @@ class ChatService:
                                     ),
                                     conn_kind=conn.kind if conn else None,
                                     byom_usd=byom_usd,
+                                    backend_fallback_from=next(iter(exclude_backends), None),
                                 )
                             )
 
@@ -1090,6 +1235,7 @@ class ChatService:
                 model_tag=request.model,
                 error_code="circuit_open",
                 start_time=start_time,
+                serving_backend=served_backend,
             )
             raise ProviderError(
                 message=f"Provider temporarily unavailable: {e}",
@@ -1106,6 +1252,7 @@ class ChatService:
                 model_tag=request.model,
                 error_code=error_code,
                 start_time=start_time,
+                serving_backend=served_backend,
                 error_detail=str(e),
             )
             raise
@@ -1268,6 +1415,7 @@ class ChatService:
         error_code: str,
         start_time: float,
         error_detail: str | None = None,
+        serving_backend: str | None = None,
     ) -> None:
         """Record a failed request for tracking.
 
@@ -1307,7 +1455,13 @@ class ChatService:
                     # The actual provider/exception text — without this a failed
                     # trace shows only the exception class name, and the operator
                     # has to grep container logs to learn what went wrong.
-                    cc_metadata={"error_detail": error_detail[:500]} if error_detail else None,
+                    cc_metadata=(
+                        {
+                            **({"error_detail": error_detail[:500]} if error_detail else {}),
+                            **({"serving_backend": serving_backend} if serving_backend else {}),
+                        }
+                        or None
+                    ),
                 )
                 await err_session.commit()
         except Exception as e:

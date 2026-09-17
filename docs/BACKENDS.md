@@ -180,6 +180,35 @@ your deployment, not a database) — so the flow is: configure credentials once
 in env, then move traffic between backends live whenever you need to (e.g.
 shift Claude to Bedrock during a first-party incident, then reset).
 
+## Automatic failover between backends
+
+A backend outage never needs a config change. When the backend that serves a
+model fails with a serving fault — a 5xx/529, a connection or timeout error,
+a provider 429, or an open circuit breaker — the gateway retries the **same
+model** once on the next backend in that family's priority list, before any
+client-supplied `fallback_models`. So with `bedrock,first_party`, a Bedrock
+incident quietly moves Claude to the Anthropic API per request and moves it
+back as soon as Bedrock recovers.
+
+Rules, on both wires:
+
+- Never on a 4xx (the request would fail identically elsewhere).
+- Never after a stream has emitted its first bytes — an open stream is
+  committed to its backend.
+- At most one hop per request; the hop's own failure is the one you see.
+- Requests served through a tenant connection (your own provider key) are
+  never moved onto the gateway's keys.
+- The Anthropic wire stays byte-faithful: a native Bedrock request fails over
+  to native first-party, never onto the translating path.
+
+Circuit breakers are per backend (`anthropic:bedrock`, `anthropic:first_party`);
+after 5 consecutive failures a backend is skipped for 30 s without paying its
+timeout, then probed again. Attribution: `metadata.backend_fallback_from` on
+`/v1/chat/completions`, the `X-MLPal-Backend-Fallback-From` header on
+`/v1/messages`, and `backend_fallback_from` / `serving_backend` in every usage
+row — the failed attempt is recorded under its own backend with its error.
+`MLPAL_BACKEND_FAILOVER=false` turns the hop off (breakers stay per backend).
+
 ## Verifying a box
 
 `scripts/probe_backends.py {bedrock,vertex,azure}` live-verifies each leg

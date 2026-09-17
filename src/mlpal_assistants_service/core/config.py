@@ -207,6 +207,13 @@ class Settings(BaseSettings):
     anthropic_backends: str = Field(
         default="first_party", alias="MLPAL_ANTHROPIC_BACKENDS"
     )
+    # Backend failover: when a request fails on its serving backend with a
+    # serving fault (5xx / timeout / connection error / provider 429 / open
+    # breaker), retry the SAME model once on the next backend in the family's
+    # priority list. Never on 4xx, never after a stream has emitted. Circuit
+    # breakers are per backend, so a dead backend is skipped without paying
+    # its timeout once its breaker opens. Off = one backend per model, as before.
+    backend_failover_enabled: bool = Field(default=True, alias="MLPAL_BACKEND_FAILOVER")
     # Azure OpenAI / AI Foundry, v1 surface (<endpoint>/openai/v1/). Azure
     # addresses models by DEPLOYMENT name; name deployments after the model
     # IDs (e.g. deployment "gpt-5.2" for gpt-5.2) and no mapping is needed.

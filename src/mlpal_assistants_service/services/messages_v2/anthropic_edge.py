@@ -28,7 +28,11 @@ from mlpal_assistants_service.services.messages_v2.anthropic_backend import (
     AnthropicBedrockBackend,
     AnthropicFirstPartyBackend,
 )
-from mlpal_assistants_service.services.messages_v2.edges import EdgeResult, RequestContext
+from mlpal_assistants_service.services.messages_v2.edges import (
+    EdgeResult,
+    RequestContext,
+    UpstreamRefused,
+)
 from mlpal_assistants_service.services.messages_v2.errors import error_body
 from mlpal_assistants_service.services.messages_v2.schemas import ValidatedRequest
 from mlpal_assistants_service.services.messages_v2.usage import CanonicalUsage
@@ -151,13 +155,14 @@ class AnthropicEdge:
         ) as resp:
             status_code = resp.status_code
             if status_code != 200:
-                # The provider refused the request (a JSON error, not SSE). Our
-                # 200 + SSE headers are already on the wire, so surface it as an
-                # Anthropic-shaped `error` event instead of a bare JSON body.
+                # The provider refused the request (a JSON error, not SSE).
+                # Nothing has been forwarded yet, so hand the core a typed
+                # refusal: it retries on another backend when it can, else
+                # emits the Anthropic-shaped `error` event (our 200 + SSE
+                # headers are already on the wire).
                 raw = await resp.aread()
-                yield b"event: error\ndata: " + _as_stream_error(raw, status_code) + b"\n\n"
                 ctx.report(None, status_code, None)
-                return
+                raise UpstreamRefused(status_code, _as_stream_error(raw, status_code))
             # aiter_bytes (not aiter_raw): decode the transport Content-
             # Encoding (Anthropic gzips the SSE stream) so the client gets
             # plain SSE. Still event-faithful — we never parse/reserialize

@@ -62,7 +62,7 @@ class AdapterFactory:
 
     # Resolution cache: (family, provider_model_id) -> (adapter, wire_id).
     # Filled lazily, valid for process lifetime (backend config is env-only).
-    _resolution: dict[tuple[str, str], tuple["BaseAdapter", str]] = {}
+    _resolution: dict[tuple[str, str, frozenset[str]], tuple["BaseAdapter", str]] = {}
 
     def __init__(self) -> None:
         """Initialize the factory with default adapters."""
@@ -237,7 +237,12 @@ class AdapterFactory:
         self._backend_instances[key] = instance
         return instance
 
-    def resolve(self, family: str, provider_model_id: str) -> tuple["BaseAdapter", str]:
+    def resolve(
+        self,
+        family: str,
+        provider_model_id: str,
+        exclude: frozenset[str] = frozenset(),
+    ) -> tuple["BaseAdapter", str]:
         """Pick the adapter that serves `provider_model_id` for `family`.
 
         Walks the family's priority list; first backend that is configured
@@ -249,10 +254,14 @@ class AdapterFactory:
         on the provider call (deployment name on Azure, mapped ID on
         Bedrock/Vertex Claude, unchanged for first-party).
 
+        `exclude` skips backends by name — backend failover retries the same
+        model on the next backend in priority order without the one that
+        just failed. Cached per (family, model, exclude).
+
         Raises:
             ValueError: no configured backend serves this model.
         """
-        cache_key = (family, provider_model_id)
+        cache_key = (family, provider_model_id, exclude)
         hit = self._resolution.get(cache_key)
         if hit is not None:
             return hit
@@ -266,6 +275,9 @@ class AdapterFactory:
             return result
         tried = []
         for backend in self._priority(family):
+            if backend in exclude:
+                tried.append(f"{backend} (excluded)")
+                continue
             adapter = self._get_backend(family, backend)
             if adapter is None:
                 tried.append(f"{backend} (unconfigured)")

@@ -73,6 +73,19 @@ class RequestContext:
             self.provider_message_id = provider_message_id
 
 
+class UpstreamRefused(Exception):
+    """An edge's stream failed BEFORE any provider bytes were forwarded (the
+    provider answered with a JSON error, or the adapter raised). `body` is
+    the Anthropic-shaped error JSON to emit as an `error` SSE event if the
+    request cannot be served elsewhere. Raised, not yielded, so the core can
+    retry on another backend while the stream is still uncommitted."""
+
+    def __init__(self, status_code: int, body: bytes) -> None:
+        self.status_code = status_code
+        self.body = body
+        super().__init__(f"upstream refused: HTTP {status_code}")
+
+
 @dataclass
 class EdgeResult:
     """Non-streaming result: faithful Anthropic JSON bytes + status."""

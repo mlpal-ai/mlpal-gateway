@@ -9,6 +9,8 @@ wire bytes and report usage (see edges.py). v2-A wires the Anthropic edge.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import dataclasses
 import json
 import logging
 import time
@@ -16,8 +18,14 @@ from collections.abc import AsyncIterator, Mapping
 from decimal import Decimal
 from typing import Any
 
+import httpx
 from fastapi.responses import Response, StreamingResponse
 
+from mlpal_assistants_service.adapters.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerOpen,
+    CircuitBreakerRegistry,
+)
 from mlpal_assistants_service.adapters.factory import get_adapter_factory
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
@@ -33,7 +41,12 @@ from mlpal_assistants_service.core.metrics import get_metrics
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
 from mlpal_assistants_service.services.messages_v2.anthropic_backend import native_backend_for
 from mlpal_assistants_service.services.messages_v2.anthropic_edge import AnthropicEdge
-from mlpal_assistants_service.services.messages_v2.edges import ProviderEdge, RequestContext
+from mlpal_assistants_service.services.messages_v2.edges import (
+    EdgeResult,
+    ProviderEdge,
+    RequestContext,
+    UpstreamRefused,
+)
 from mlpal_assistants_service.services.messages_v2.errors import error_body
 from mlpal_assistants_service.services.messages_v2.reasoning import effort_from_thinking
 from mlpal_assistants_service.services.messages_v2.schemas import ValidatedRequest
@@ -125,26 +138,28 @@ class MessagesV2Core:
         return model.model_tag in allow
 
     # -- edge selection -----------------------------------------------------
-    def _backend_label(self, model) -> str:
+    def _backend_label(self, model, exclude: frozenset[str] = frozenset()) -> str:
         """Observability label: which backend serves this request — the
         native backend's name on the passthrough path, else the resolved
         adapter's backend_name (first_party / azure / vertex / bedrock)."""
         if model.provider == "anthropic":
             try:
-                backend = native_backend_for(self._settings, model.provider_model_id)
+                backend = native_backend_for(
+                    self._settings, model.provider_model_id, exclude
+                )
                 if backend is not None:
                     return backend.name
             except ValueError:
                 pass
         try:
             adapter, _ = get_adapter_factory().resolve(
-                model.provider, model.provider_model_id
+                model.provider, model.provider_model_id, exclude
             )
             return getattr(adapter, "backend_name", "first_party")
         except (ValueError, RuntimeError):
             return "unresolved"
 
-    def _edge_for(self, model) -> ProviderEdge:
+    def _edge_for(self, model, exclude: frozenset[str] = frozenset()) -> ProviderEdge:
         provider = model.provider
         if provider == "anthropic":
             # Native path (byte-faithful) via the FIRST configured native
@@ -153,26 +168,184 @@ class MessagesV2Core:
             # Only when none does (a model neither native backend has) fall
             # back to the adapter path, where the factory priority picks the
             # serving backend (bedrock SDK, vertex).
-            backend = native_backend_for(self._settings, model.provider_model_id)
+            backend = native_backend_for(self._settings, model.provider_model_id, exclude)
             if backend is not None:
                 return AnthropicEdge(backend)
-            return self._translating_edge(provider, model.provider_model_id)
+            return self._translating_edge(provider, model.provider_model_id, exclude)
         if provider in ("openai", "google", "bedrock"):
             # Same translating edge for all three: Anthropic surface ↔
             # OpenAI-common ↔ provider adapter ↔ Anthropic wire (see
             # translating_edge.py). For bedrock this serves the open-weight
             # catalog (Converse API) — the factory resolves the serving
             # backend exactly as on the OpenAI wire.
-            return self._translating_edge(provider, model.provider_model_id)
+            return self._translating_edge(provider, model.provider_model_id, exclude)
         raise ModelNotAllowed(f"provider '{provider}' not yet served by /v2/messages")
 
     @staticmethod
-    def _translating_edge(provider: str, provider_model_id: str) -> TranslatingEdge:
+    def _translating_edge(
+        provider: str, provider_model_id: str, exclude: frozenset[str] = frozenset()
+    ) -> TranslatingEdge:
         try:
-            adapter, wire_id = get_adapter_factory().resolve(provider, provider_model_id)
+            adapter, wire_id = get_adapter_factory().resolve(
+                provider, provider_model_id, exclude
+            )
         except (ValueError, RuntimeError) as e:
             raise ModelNotAllowed(str(e))
         return TranslatingEdge(adapter, wire_model_id=wire_id)
+
+    # -- backend failover ---------------------------------------------------
+    # A serving fault on the backend that serves a model (5xx / 529, a
+    # transport error, an open breaker) retries the SAME model once on the
+    # next backend in the family's priority list, before any client model
+    # fallback. Native stays native: a byte-faithful Claude request never
+    # degrades to the lossy translating edge on a hop (thinking blocks and
+    # tool signatures would change shape mid-conversation).
+    _TRANSPORT_ERRORS = (httpx.TransportError, TimeoutError, ConnectionError)
+    # Provider throttling (429) also hops — the next backend has its own
+    # quota — but is NOT a breaker failure (the backend is up, just busy).
+    _HOP_STATUSES = frozenset({429})
+
+    def _breaker(self, ctx: RequestContext) -> CircuitBreaker | None:
+        """Per-backend breaker (`anthropic:bedrock`) shared with /v1/chat —
+        None for connection-served requests (their credential, not a backend
+        health signal) and when the router carries no registry (tests)."""
+        if ctx.conn_kind is not None:
+            return None
+        registry = getattr(self._router, "circuit_breakers", None)
+        if not isinstance(registry, CircuitBreakerRegistry):
+            return None
+        return registry.get_sync(f"{ctx.provider}:{ctx.backend}")
+
+    def _failover_edge(
+        self, edge: ProviderEdge, model, ctx: RequestContext
+    ) -> tuple[ProviderEdge, RequestContext] | None:
+        """The (edge, ctx) for a same-model retry on the next backend, or
+        None when no hop applies: failover off, connection-served, or no
+        other backend of the same kind serves this model."""
+        if not getattr(self._settings, "backend_failover_enabled", True):
+            return None
+        if ctx.conn_kind is not None or model is None:
+            return None
+        exclude = frozenset({ctx.backend})
+        try:
+            if isinstance(edge, AnthropicEdge):
+                backend = native_backend_for(self._settings, model.provider_model_id, exclude)
+                if backend is None:
+                    return None
+                alt: ProviderEdge = AnthropicEdge(backend)
+                label = backend.name
+            else:
+                alt = self._translating_edge(model.provider, model.provider_model_id, exclude)
+                label = getattr(alt._adapter, "backend_name", "first_party")
+        except (ModelNotAllowed, ValueError):
+            return None
+        retry_ctx = dataclasses.replace(
+            ctx,
+            backend=label,
+            usage=None,
+            status_code=0,
+            provider_message_id=None,
+            ttft_ms=None,
+            empty_completion=False,
+            cc_metadata={**ctx.cc_metadata, "backend_fallback_from": ctx.backend},
+        )
+        return alt, retry_ctx
+
+    async def _invoke(
+        self,
+        edge: ProviderEdge,
+        req: ValidatedRequest,
+        ctx: RequestContext,
+        model,
+        t0: float,
+        *,
+        hop: bool = False,
+    ) -> tuple[EdgeResult, RequestContext]:
+        """Non-streaming invoke under the backend's breaker, with one backend
+        hop on a serving fault. Returns the result and the ctx that produced
+        it (the caller meters that ctx); a failed first attempt is metered
+        here under its own backend + error status."""
+        breaker = self._breaker(ctx)
+        result: EdgeResult | None = None
+        try:
+            async with breaker if breaker is not None else contextlib.nullcontext():
+                result = await edge.invoke(req, ctx)
+                if result.status_code in self._FALLBACK_STATUSES:
+                    raise _UpstreamFault()  # counts against the breaker
+        except _UpstreamFault:
+            pass
+        except CircuitBreakerOpen as e:
+            ctx.report(None, 503, None)
+            result = EdgeResult(status_code=503, body=error_body(503, str(e)))
+        except self._TRANSPORT_ERRORS as e:
+            ctx.report(None, 502, None)
+            result = EdgeResult(
+                status_code=502, body=error_body(502, f"upstream transport error: {e}")
+            )
+        else:
+            if result.status_code not in self._HOP_STATUSES:
+                return result, ctx
+        assert result is not None
+        alt = None if hop else self._failover_edge(edge, model, ctx)
+        if alt is None:
+            return result, ctx
+        await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
+        retry_edge, retry_ctx = alt
+        logger.warning(
+            f"[v2.messages] backend_failover: model={ctx.model_tag} from={ctx.backend} "
+            f"to={retry_ctx.backend} status={result.status_code} trace={ctx.trace_id}"
+        )
+        return await self._invoke(retry_edge, req, retry_ctx, model, t0, hop=True)
+
+    async def _pump(
+        self,
+        edge: ProviderEdge,
+        req: ValidatedRequest,
+        ctx: RequestContext,
+        model,
+        t0: float,
+        queue: asyncio.Queue,
+        live: dict[str, RequestContext],
+        *,
+        hop: bool = False,
+    ) -> None:
+        """Streaming twin of `_invoke`: forward the edge's SSE bytes into the
+        heartbeat queue; a pre-stream fault (typed refusal, transport error,
+        open breaker) hops once to the next backend. Once a chunk is queued
+        the stream is committed and faults propagate."""
+        breaker = self._breaker(ctx)
+        emitted = False
+        try:
+            async with breaker if breaker is not None else contextlib.nullcontext():
+                async for chunk in edge.stream(req, ctx):
+                    emitted = True
+                    await queue.put(("chunk", chunk))
+                if ctx.status_code in self._FALLBACK_STATUSES:
+                    raise _UpstreamFault()  # counts against the breaker
+        except _UpstreamFault:
+            return
+        except (UpstreamRefused, CircuitBreakerOpen, *self._TRANSPORT_ERRORS) as e:
+            if emitted or hop:
+                raise
+            if isinstance(e, UpstreamRefused):
+                if e.status_code not in self._FALLBACK_STATUSES | self._HOP_STATUSES:
+                    raise
+            elif isinstance(e, CircuitBreakerOpen):
+                ctx.report(None, 503, None)
+            else:
+                ctx.report(None, 502, None)
+            alt = self._failover_edge(edge, model, ctx)
+            if alt is None:
+                raise
+            await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
+            retry_edge, retry_ctx = alt
+            logger.warning(
+                f"[v2.messages] backend_failover(stream): model={ctx.model_tag} "
+                f"from={ctx.backend} to={retry_ctx.backend} status={ctx.status_code} "
+                f"trace={ctx.trace_id}"
+            )
+            live["ctx"] = retry_ctx
+            await self._pump(retry_edge, req, retry_ctx, model, t0, queue, live, hop=True)
 
     # -- request handling ---------------------------------------------------
     async def handle(
@@ -354,7 +527,7 @@ class MessagesV2Core:
         t0 = time.perf_counter()
         if req.stream:
             return StreamingResponse(
-                self._stream_with_heartbeat(edge, req, ctx, t0),
+                self._stream_with_heartbeat(edge, req, ctx, t0, model),
                 media_type="text/event-stream",
                 headers={
                     "Cache-Control": "no-cache", "Connection": "keep-alive",
@@ -362,7 +535,7 @@ class MessagesV2Core:
                 },
             )
 
-        result = await edge.invoke(req, ctx)
+        result, ctx = await self._invoke(edge, req, ctx, model, t0)
         compute_units = await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
         # Opt-in payload capture — hard-off keys skip even the task spawn;
         # enabled-check + key resolution + zlib all happen inside the task.
@@ -399,7 +572,12 @@ class MessagesV2Core:
             content=result.body,
             status_code=result.status_code,
             media_type=result.media_type,
-            headers={**_cu_headers(compute_units), **_conn_headers(ctx), **_effort_headers(ctx)},
+            headers={
+                **_cu_headers(compute_units),
+                **_conn_headers(ctx),
+                **_effort_headers(ctx),
+                **_backend_failover_headers(ctx),
+            },
         )
 
     # Serving failures worth advancing to the next fallback candidate for.
@@ -465,7 +643,12 @@ class MessagesV2Core:
 
     # -- streaming transport (heartbeat) ------------------------------------
     async def _stream_with_heartbeat(
-        self, edge: ProviderEdge, req: ValidatedRequest, ctx: RequestContext, t0: float
+        self,
+        edge: ProviderEdge,
+        req: ValidatedRequest,
+        ctx: RequestContext,
+        t0: float,
+        model=None,
     ) -> AsyncIterator[bytes]:
         """Pipe the edge's raw Anthropic-SSE bytes through, emitting `: ping`
         keepalives during silence so long reasoning/tool phases can't trip the
@@ -479,11 +662,13 @@ class MessagesV2Core:
         # cap bounds memory; capture_payload truncates to max_body_kb anyway.
         capture_buf = bytearray()
         capture_cap = 1024 * 1024
+        # `live["ctx"]` is the ctx of the backend that actually serves — a
+        # pre-stream backend hop swaps it before any chunk is queued.
+        live: dict[str, RequestContext] = {"ctx": ctx}
 
         async def _produce() -> None:
             try:
-                async for chunk in edge.stream(req, ctx):
-                    await queue.put(("chunk", chunk))
+                await self._pump(edge, req, ctx, model, t0, queue, live)
             except Exception as e:  # noqa: BLE001
                 await queue.put(("error", e))
             finally:
@@ -511,15 +696,23 @@ class MessagesV2Core:
                     continue
                 if kind == "chunk":
                     last_chunk = time.monotonic()
-                    if ctx.ttft_ms is None:
-                        ctx.ttft_ms = int((time.perf_counter() - t0) * 1000)
+                    if live["ctx"].ttft_ms is None:
+                        live["ctx"].ttft_ms = int((time.perf_counter() - t0) * 1000)
                     if len(capture_buf) < capture_cap:
                         capture_buf += payload[: capture_cap - len(capture_buf)]
                     yield payload
                 elif kind == "error":
                     logger.error(f"[v2.messages] stream error trace={ctx.trace_id}: {payload}")
-                    # Mid-stream provider failure: emit an Anthropic error event.
-                    yield b"event: error\ndata: " + error_body(502, "upstream stream error") + b"\n\n"
+                    # Provider failure with our 200 + SSE headers already on
+                    # the wire: emit an Anthropic-shaped error event — the
+                    # provider's own error when the stream never opened.
+                    if isinstance(payload, UpstreamRefused):
+                        data = payload.body
+                    elif isinstance(payload, CircuitBreakerOpen):
+                        data = error_body(503, str(payload))
+                    else:
+                        data = error_body(502, "upstream stream error")
+                    yield b"event: error\ndata: " + data + b"\n\n"
                     break
                 else:  # end
                     break
@@ -530,6 +723,7 @@ class MessagesV2Core:
                 await producer
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+            ctx = live["ctx"]
             await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
             if _key_capture_possible(ctx):
                 _spawn(
@@ -819,6 +1013,16 @@ async def _capture_v2(
         await capture_payload(trace_id, request_body, body, cfg.max_body_kb)
     except Exception:  # noqa: BLE001 — debug data must never raise
         logger.exception(f"[v2.messages] capture failed trace={trace_id}")
+
+
+class _UpstreamFault(Exception):
+    """Internal: a retriable upstream status, raised inside the breaker
+    context so the breaker counts it as a backend failure."""
+
+
+def _backend_failover_headers(ctx: RequestContext) -> dict[str, str]:
+    failed = ctx.cc_metadata.get("backend_fallback_from")
+    return {"X-MLPal-Backend-Fallback-From": failed} if failed else {}
 
 
 def _cu_headers(compute_units: Decimal) -> dict[str, str]:
