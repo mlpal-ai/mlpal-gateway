@@ -1,10 +1,11 @@
 {
   "schema": 3,
-  "updated": "2026-09-07",
+  "updated": "2026-09-22",
   "_note": "Declared, deterministic curation only. Objective axes (cost, context, caps, throughput) merge live and are never here. THREE declared blocks: (1) `lineage` = (provider, generation, tier, tier_rank) — structural, stable, placed once per model; powers deterministic 'provider best' resolution and same-tier version ordering. tier_rank is 1=flagship WITHIN a provider (not cross-provider). (2) `cards` = the deterministic model card: a short `summary` + published `benchmarks` (sourced + dated). The card is NEVER mutated by feedback. (3) MEASURED quality (the feedback loop, see model_feedback) is served ORTHOGONALLY as `measured`, alongside — never merged into — the card. A model absent here is still fully routable on the objective axes.",
 
   "lineage": {
     "claude-fable-5":              {"generation": 5.0, "tier": "fable",  "tier_rank": 1},
+    "claude-opus-5-5":             {"generation": 5.5, "tier": "opus",   "tier_rank": 2},
     "claude-opus-5":               {"generation": 5.0, "tier": "opus",   "tier_rank": 2},
     "claude-opus-4-8":             {"generation": 4.8, "tier": "opus",   "tier_rank": 2},
     "claude-opus-4-7":             {"generation": 4.7, "tier": "opus",   "tier_rank": 2},
@@ -50,6 +51,9 @@
   },
 
   "cards": {
+    "claude-opus-5-5": {
+      "summary": "Anthropic Opus 5.5 (2026-09-21) — Fable-5.1-class quality at Opus-minus pricing: $4/$20 (20% below Opus 5), cache reads $0.20 (0.05x), output >30% faster. Launch-coverage table: Terminal-Bench 4.0 66.4 (Astra 57.9, Fable 5.1 55.8), FrontierCode v1.1 54.4, CursorBench 4.0 57.8, HLE 67.7 (tools), OSWorld 2.0 81.8 partial. 1M context, 128K output; effort low/medium/high/xhigh/max (thinking always on, no none); rejects temperature and forced tool_choice (any/tool). (No SWE-bench Verified / GPQA figure published.)"
+    },
     "claude-opus-5": {
       "summary": "Anthropic Opus-tier flagship (supersedes Opus 4.8 at the same $5/$25 price); approaches Fable 5. Leads on repo-level coding (SWE-bench Verified ~96) and reasoning (GPQA Diamond 94.1); wins Frontier-Bench v0.1. 1M context, 128k output."
     },
@@ -118,13 +122,13 @@
       "tiers": {
         "max": {
           "model": "gpt-6-astra",
-          "alternates": ["claude-fable-5", "claude-opus-5"],
+          "alternates": ["claude-opus-5-5", "claude-fable-5", "claude-opus-5"],
           "good_for": "hardest reasoning, architecture, deep repo-level engineering - quality-first"
         },
         "frontier": {
-          "model": "claude-opus-5",
-          "alternates": ["gpt-6-astra", "gpt-5.6-sol", "claude-fable-5"],
-          "good_for": "hard bounded coding + reasoning subtasks - frontier quality (leads most coding/reasoning benchmarks) at lower cost; gpt-5.6-sol alternate for terminal long-horizon / max throughput"
+          "model": "claude-opus-5-5",
+          "alternates": ["claude-opus-5", "gpt-6-astra", "gpt-5.6-sol", "claude-fable-5"],
+          "good_for": "hard bounded coding + reasoning subtasks - Fable-class quality (leads Terminal-Bench/FrontierCode) at the lowest frontier cost; gpt-5.6-sol alternate for terminal long-horizon / max throughput"
         },
         "mid": {
           "model": "gpt-5.6-terra",

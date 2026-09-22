@@ -18,6 +18,7 @@ CAPS = {"pdf": True, "audio": False, "tools": True, "vision": True, "operation":
 # Real ledger rates so rel_cost assertions track the actual curation.
 RATES = {
     "claude-fable-5": ("anthropic", "10", "50"),      # blended 20.000
+    "claude-opus-5-5": ("anthropic", "4", "20"),      # blended  8.000
     "claude-opus-5": ("anthropic", "5", "25"),        # blended 10.000
     "claude-opus-4-8": ("anthropic", "5", "25"),      # blended 10.000
     "gpt-5.6-sol": ("openai", "5", "30"),
@@ -82,12 +83,12 @@ async def test_catalog_happy_path_rel_cost_and_alternates():
     # 4 tiers in curation order, primaries served
     assert list(t.keys()) == ["max", "frontier", "mid", "cheap"]
     assert t["max"]["model"] == "gpt-6-astra" and not t["max"]["served_alternate"]
-    assert t["frontier"]["model"] == "claude-opus-5"
+    assert t["frontier"]["model"] == "claude-opus-5-5"
     assert t["mid"]["model"] == "gpt-5.6-terra"
     assert t["cheap"]["model"] == "gpt-5.6-luna"
     # rel_cost normalized to max=100 from the blended 3:1 ledger rates
     assert t["max"]["rel_cost"] == 100
-    assert t["frontier"]["rel_cost"] == 50    # opus-5 10/20
+    assert t["frontier"]["rel_cost"] == 40    # opus-5.5 8/20
     assert t["mid"]["rel_cost"] == 28         # 5.625/20
     assert t["cheap"]["rel_cost"] == 11       # 2.25/20
     # alternates exposed with availability + their own rel_cost
@@ -105,20 +106,20 @@ async def test_catalog_tier_failover_marks_alternate_and_lists_primary():
     router, pricing = _mocks(unavailable={"gpt-6-astra", "claude-fable-5"})
     cat = await build_catalog("coding", router, pricing)
     top = cat["tiers"]["max"]
-    assert top["model"] == "claude-opus-5"         # second alternate served
+    assert top["model"] == "claude-opus-5-5"       # first alternate served
     assert top["served_alternate"] is True
     # the dark primary still appears in the ladder, flagged unavailable
     alts = {a["model"]: a for a in top["alternates"]}
     assert alts["gpt-6-astra"]["available"] is False
     assert alts["claude-fable-5"]["available"] is False
-    # normalization follows the served top model (opus blended 10)
+    # normalization follows the served top model (opus 5.5 blended 8)
     assert top["rel_cost"] == 100
-    # frontier's own primary is now opus-5 too (also 100 here); its gpt-5.6-sol
+    # frontier's own primary is opus-5.5 too (also 100 here); its gpt-5.6-sol
     # ALTERNATE is pricier than the served max — rel_cost can exceed 100, honestly.
     fr = cat["tiers"]["frontier"]
-    assert fr["model"] == "claude-opus-5" and fr["rel_cost"] == 100
+    assert fr["model"] == "claude-opus-5-5" and fr["rel_cost"] == 100
     sol_alt = next(a for a in fr["alternates"] if a["model"] == "gpt-5.6-sol")
-    assert sol_alt["rel_cost"] == 112   # 11.25/10=112.5, banker's rounding
+    assert sol_alt["rel_cost"] == 141   # 11.25/8=140.625
 
 
 @pytest.mark.asyncio
@@ -196,8 +197,9 @@ async def test_lineage_and_flagship_resolution():
     dominates generation (Google's pro flagship sits below a newer flash number)."""
     router, pricing = _mocks()
     cat = await build_catalog("coding", router, pricing)
-    # opus-5 (gen 5.0) is now the latest opus; opus-4-8 (4.8) is superseded
-    assert cat["models"]["claude-opus-5"]["lineage"]["latest_in_tier"] is True
+    # opus-5-5 (gen 5.5) is now the latest opus; opus-5 and opus-4-8 are superseded
+    assert cat["models"]["claude-opus-5-5"]["lineage"]["latest_in_tier"] is True
+    assert cat["models"]["claude-opus-5"]["lineage"]["latest_in_tier"] is False
     opus48 = cat["models"]["claude-opus-4-8"]["lineage"]
     assert opus48["tier"] == "opus" and opus48["tier_rank"] == 2 and opus48["latest_in_tier"] is False
     # flagships: OpenAI -> newest gen's rank-1; Google -> pro (older gen) NOT flash;

@@ -144,6 +144,20 @@
     "output_cu_rate": "7.50000000"
   },
   {
+    "model_tag": "claude-opus-5-5",
+    "operation": "chat",
+    "tier": "premium",
+    "input_rate": "4.00000000",
+    "output_rate": "20.00000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-09-21",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "1.20000000",
+    "output_cu_rate": "6.00000000",
+    "cache_read_rate": "0.20000000"
+  },
+  {
     "model_tag": "claude-opus-5",
     "operation": "chat",
     "tier": "premium",
