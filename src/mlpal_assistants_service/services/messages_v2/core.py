@@ -577,6 +577,11 @@ class MessagesV2Core:
                 **_conn_headers(ctx),
                 **_effort_headers(ctx),
                 **_backend_failover_headers(ctx),
+                **(
+                    {"X-MLPal-Usage": _usage_event_json(ctx, compute_units).decode()}
+                    if _wants_usage_event(ctx.headers)
+                    else {}
+                ),
             },
         )
 
@@ -687,6 +692,7 @@ class MessagesV2Core:
 
         producer = asyncio.create_task(_produce())
         keepalive = asyncio.create_task(_keepalive())
+        metered = False
         try:
             while True:
                 kind, payload = await queue.get()
@@ -716,6 +722,15 @@ class MessagesV2Core:
                     break
                 else:  # end
                     break
+            # Stream ended (message_stop or provider error event) with the
+            # client still attached: meter now so the opt-in usage trailer
+            # can carry the billed CU. A disconnected client never gets here
+            # and is metered in `finally`.
+            ctx = live["ctx"]
+            compute_units = await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
+            metered = True
+            if _wants_usage_event(ctx.headers):
+                yield b"event: mlpal_usage\ndata: " + _usage_event_json(ctx, compute_units) + b"\n\n"
         finally:
             keepalive.cancel()
             producer.cancel()
@@ -724,7 +739,8 @@ class MessagesV2Core:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             ctx = live["ctx"]
-            await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
+            if not metered:
+                await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
             if _key_capture_possible(ctx):
                 _spawn(
                     _capture_v2(
@@ -1018,6 +1034,46 @@ async def _capture_v2(
 class _UpstreamFault(Exception):
     """Internal: a retriable upstream status, raised inside the breaker
     context so the breaker counts it as a backend failure."""
+
+
+USAGE_EVENT_HEADER = "x-mlpal-usage-event"
+
+
+def _wants_usage_event(headers: Mapping[str, str]) -> bool:
+    """Opt-in per request: `X-MLPal-Usage-Event: 1|true`. Off by default so the
+    Anthropic wire stays byte-faithful for clients that never asked (Claude
+    Code); only a client that asks sees a non-Anthropic trailer event."""
+    v = headers.get(USAGE_EVENT_HEADER) or headers.get(USAGE_EVENT_HEADER.title())
+    return (v or "").strip().lower() in ("1", "true", "yes")
+
+
+def _usage_event_json(ctx: RequestContext, compute_units: Decimal) -> bytes:
+    """The `mlpal_usage` trailer (streams) / `X-MLPal-Usage` header
+    (non-streaming): the billed CU for THIS request plus the same token
+    fields Anthropic's message_delta usage carries, so a client can
+    reconcile the meter against the stream it just read. Connection-served
+    requests carry billed 0 (their tokens, their bill) and the estimate."""
+    u = ctx.usage
+    body = {
+        "type": "mlpal_usage",
+        "trace_id": ctx.trace_id,
+        "model": ctx.model_tag,
+        "serving_backend": ctx.backend,
+        "status_code": ctx.status_code,
+        "compute_units": str(compute_units),
+        "usage": {
+            "input_tokens": u.input if u else 0,
+            "output_tokens": u.output if u else 0,
+            "cache_read_input_tokens": u.cache_read if u else 0,
+            "cache_creation_input_tokens": u.cache_write if u else 0,
+            **({"reasoning_tokens": u.reasoning} if u and u.reasoning is not None else {}),
+        },
+        **({"serving_credentials": ctx.conn_kind} if ctx.conn_kind else {}),
+        **({"connection_estimate": ctx.conn_estimate} if ctx.conn_estimate is not None else {}),
+        **({"backend_fallback_from": ctx.cc_metadata["backend_fallback_from"]} if ctx.cc_metadata.get("backend_fallback_from") else {}),
+        **({"reasoning_effort": ctx.cc_metadata["reasoning_effort"]} if ctx.cc_metadata.get("reasoning_effort") else {}),
+    }
+    return json.dumps(body, separators=(",", ":")).encode()
 
 
 def _backend_failover_headers(ctx: RequestContext) -> dict[str, str]:
