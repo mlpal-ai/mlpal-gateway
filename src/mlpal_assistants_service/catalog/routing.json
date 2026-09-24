@@ -1,18 +1,22 @@
 {
   "_note": "Router-tag candidate lists \u2014 ONE source of truth with the rest of the catalog feed. For each (tag, operation) the candidates are priority-ordered and deliberately span providers: resolution picks the FIRST candidate this deployment actually serves (model active + provider configured), so a single-provider box still resolves every tag its provider can cover. Reconciled into meta_model_routing by scripts/reconcile_catalog.py.",
-  "updated": "2026-08-28",
+  "updated": "2026-09-24",
   "routes": [
     {
       "meta_model_tag": "mlpal",
       "operation": "chat",
       "candidates": [
         {
+          "model_tag": "claude-opus-5-5",
+          "reason": "frontier of record (Opus 5.5: Fable-class at the lowest frontier price)"
+        },
+        {
           "model_tag": "claude-opus-5",
           "reason": "frontier of record for coding/agentic quality (catalog frontier tier)"
         },
         {
-          "model_tag": "gpt-5.6-terra",
-          "reason": "OpenAI flagship \u2014 strongest served OpenAI generalist"
+          "model_tag": "gpt-6-sol",
+          "reason": "OpenAI GPT-6 Sol \u2014 strongest served OpenAI generalist below Astra"
         },
         {
           "model_tag": "gemini-3.1-pro-preview",
@@ -29,12 +33,16 @@
       "operation": "structured_output",
       "candidates": [
         {
+          "model_tag": "claude-opus-5-5",
+          "reason": "frontier of record (Opus 5.5: Fable-class at the lowest frontier price)"
+        },
+        {
           "model_tag": "claude-opus-5",
           "reason": "top schema adherence among served frontier models"
         },
         {
-          "model_tag": "gpt-5.6-terra",
-          "reason": "excellent JSON-schema following"
+          "model_tag": "gpt-6-sol",
+          "reason": "OpenAI GPT-6 Sol \u2014 strongest served OpenAI generalist below Astra"
         },
         {
           "model_tag": "gemini-3.1-pro-preview",

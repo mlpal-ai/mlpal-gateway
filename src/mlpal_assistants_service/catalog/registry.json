@@ -1795,6 +1795,74 @@
     "pause_reason": null
   },
   {
+    "model_tag": "gpt-6-sol",
+    "provider": "openai",
+    "provider_model_id": "gpt-6-sol",
+    "display_name": "GPT-6 Sol",
+    "description": "GPT-6 Sol (2026-09-22): the daily model for software development and multistep agent work; Astra-derived at $2/$10; 1M context; effort none\u2192max",
+    "capabilities": {
+      "pdf": true,
+      "audio": false,
+      "tools": true,
+      "vision": true,
+      "operation": "chat",
+      "streaming": true,
+      "effort_levels": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default_effort": "medium"
+    },
+    "context_length": 1050000,
+    "max_output_tokens": 128000,
+    "pricing_tier": "premium",
+    "fallback_model_tag": null,
+    "priority": 0,
+    "is_active": true,
+    "is_deprecated": false,
+    "deprecation_message": null,
+    "is_paused": false,
+    "pause_reason": null
+  },
+  {
+    "model_tag": "gpt-6-luna",
+    "provider": "openai",
+    "provider_model_id": "gpt-6-luna",
+    "display_name": "GPT-6 Luna",
+    "description": "GPT-6 Luna (2026-09-22): high-volume extraction/summarization/classification/routing at $0.10/$0.50; 1M context; effort none\u2192max",
+    "capabilities": {
+      "pdf": true,
+      "audio": false,
+      "tools": true,
+      "vision": true,
+      "operation": "chat",
+      "streaming": true,
+      "effort_levels": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default_effort": "medium"
+    },
+    "context_length": 1050000,
+    "max_output_tokens": 128000,
+    "pricing_tier": "standard",
+    "fallback_model_tag": null,
+    "priority": 0,
+    "is_active": true,
+    "is_deprecated": false,
+    "deprecation_message": null,
+    "is_paused": false,
+    "pause_reason": null
+  },
+  {
     "model_tag": "gpt-5.6-sol",
     "provider": "openai",
     "provider_model_id": "gpt-5.6-sol",

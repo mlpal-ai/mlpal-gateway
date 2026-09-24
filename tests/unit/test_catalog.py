@@ -22,6 +22,8 @@ RATES = {
     "claude-opus-5": ("anthropic", "5", "25"),        # blended 10.000
     "claude-opus-4-8": ("anthropic", "5", "25"),      # blended 10.000
     "gpt-5.6-sol": ("openai", "5", "30"),
+    "gpt-6-sol": ("openai", "2", "10"),               # blended  4.000
+    "gpt-6-luna": ("openai", "0.10", "0.50"),         # blended  0.200
     "gpt-6-astra": ("openai", "10", "50"),             # blended 11.250
     "gpt-5.6-terra": ("openai", "2.50", "15"),        # blended  5.625
     "claude-sonnet-5": ("anthropic", "3", "15"),      # blended  6.000
@@ -84,13 +86,13 @@ async def test_catalog_happy_path_rel_cost_and_alternates():
     assert list(t.keys()) == ["max", "frontier", "mid", "cheap"]
     assert t["max"]["model"] == "gpt-6-astra" and not t["max"]["served_alternate"]
     assert t["frontier"]["model"] == "claude-opus-5-5"
-    assert t["mid"]["model"] == "gpt-5.6-terra"
-    assert t["cheap"]["model"] == "gpt-5.6-luna"
+    assert t["mid"]["model"] == "gpt-6-sol"
+    assert t["cheap"]["model"] == "gpt-6-luna"
     # rel_cost normalized to max=100 from the blended 3:1 ledger rates
     assert t["max"]["rel_cost"] == 100
     assert t["frontier"]["rel_cost"] == 40    # opus-5.5 8/20
-    assert t["mid"]["rel_cost"] == 28         # 5.625/20
-    assert t["cheap"]["rel_cost"] == 11       # 2.25/20
+    assert t["mid"]["rel_cost"] == 20         # 4/20
+    assert t["cheap"]["rel_cost"] == 1        # 0.2/20
     # alternates exposed with availability + their own rel_cost
     alts = {a["model"]: a for a in t["cheap"]["alternates"]}
     assert alts["gemini-3.5-flash"]["available"] is True
@@ -114,12 +116,14 @@ async def test_catalog_tier_failover_marks_alternate_and_lists_primary():
     assert alts["claude-fable-5"]["available"] is False
     # normalization follows the served top model (opus 5.5 blended 8)
     assert top["rel_cost"] == 100
-    # frontier's own primary is opus-5.5 too (also 100 here); its gpt-5.6-sol
+    # frontier's own primary is opus-5.5 too (also 100 here); its opus-5
     # ALTERNATE is pricier than the served max — rel_cost can exceed 100, honestly.
     fr = cat["tiers"]["frontier"]
     assert fr["model"] == "claude-opus-5-5" and fr["rel_cost"] == 100
-    sol_alt = next(a for a in fr["alternates"] if a["model"] == "gpt-5.6-sol")
-    assert sol_alt["rel_cost"] == 141   # 11.25/8=140.625
+    opus5_alt = next(a for a in fr["alternates"] if a["model"] == "claude-opus-5")
+    assert opus5_alt["rel_cost"] == 125   # 10/8
+    sol_alt = next(a for a in fr["alternates"] if a["model"] == "gpt-6-sol")
+    assert sol_alt["rel_cost"] == 50    # 4/8
 
 
 @pytest.mark.asyncio

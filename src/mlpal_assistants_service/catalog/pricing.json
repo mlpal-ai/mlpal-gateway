@@ -782,6 +782,32 @@
     "output_cu_rate": "15.00000000"
   },
   {
+    "model_tag": "gpt-6-sol",
+    "operation": "chat",
+    "tier": "premium",
+    "input_rate": "2.00000000",
+    "output_rate": "10.00000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-09-22",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "0.60000000",
+    "output_cu_rate": "3.00000000"
+  },
+  {
+    "model_tag": "gpt-6-luna",
+    "operation": "chat",
+    "tier": "standard",
+    "input_rate": "0.10000000",
+    "output_rate": "0.50000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-09-22",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "0.03000000",
+    "output_cu_rate": "0.15000000"
+  },
+  {
     "model_tag": "gpt-5.6-sol",
     "operation": "chat",
     "tier": "premium",
