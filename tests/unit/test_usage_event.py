@@ -103,3 +103,24 @@ async def test_disconnect_mid_stream_is_metered_once_without_trailer():
     assert first == FRAMES[0]
     await gen.aclose()  # client went away
     core._meter.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_provider_error_still_ends_with_trailer():
+    import httpx
+
+    class _Mid(_Edge):
+        async def stream(self, req, ctx):
+            yield FRAMES[0]
+            ctx.report(None, 502, None)
+            raise httpx.ReadError("cut")
+
+    core = _core()
+    core._meter = AsyncMock(return_value=Decimal("0"))
+    req = validate(b'{"model":"m","messages":[],"stream":true}')
+    chunks = [c async for c in core._stream_with_heartbeat(_Mid(), req, _ctx({"x-mlpal-usage-event": "1"}), 0.0)]
+    assert chunks[0] == FRAMES[0] and chunks[1].startswith(b"event: error\n")
+    d = json.loads(chunks[2][len(b"event: mlpal_usage\ndata: "):].strip())
+    assert chunks[2].startswith(b"event: mlpal_usage") and d["status_code"] == 502 and d["compute_units"] == "0"
+    assert len(chunks) == 3
+    core._meter.assert_awaited_once()
