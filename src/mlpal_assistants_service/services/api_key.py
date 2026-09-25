@@ -192,6 +192,17 @@ class APIKeyService:
         )
         return result.scalar_one_or_none()
 
+    async def get_hop_keyring_key(self, key_id: str) -> APIKey | None:
+        """A key by id, ANY owner, but only if it was minted as part of a HOP
+        keyring bundle (tags.source == "hop-keyring"). The auth service
+        manages such keys on the owner's behalf; every other key stays
+        creator-only."""
+        result = await self.session.execute(select(APIKey).where(APIKey.id == key_id))
+        key = result.scalar_one_or_none()
+        if key is None or (key.tags or {}).get("source") != "hop-keyring":
+            return None
+        return key
+
     async def list_keys(
         self,
         user_id: str,

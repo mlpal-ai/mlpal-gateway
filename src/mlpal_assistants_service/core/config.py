@@ -100,6 +100,13 @@ class Settings(BaseSettings):
     # Preferred over legacy internal_service_api_key when set. During
     # parallel-acceptance window, we send BOTH headers so calls work
     # whether or not backend's receiver has been migrated to MSI.
+    # Inbound service identities (mlpal_svc_*, minted by mlpal-auth-service)
+    # are validated against the auth service. Today the only inbound service
+    # caller is the auth service itself, managing HOP-keyring keys.
+    auth_service_url: str = Field(
+        default="http://mlpal-auth.mlpal.svc.cluster.local",
+        alias="MLPAL_AUTH_SERVICE_URL",
+    )
     service_identity_token: str | None = Field(
         default=None,
         alias="MLPAL_SERVICE_IDENTITY_TOKEN",

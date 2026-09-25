@@ -12,14 +12,18 @@ and default permissions differ. The CLI / dashboard list both via
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, HTTPException, Query, status
+import structlog
+from fastapi import APIRouter, Header, HTTPException, Query, status
 
 from mlpal_assistants_service.api.deps import (
+    HOP_KEYRING_SOURCE,
     APIKeyServiceDep,
     BillingRepositoryDep,
+    KeyManager,
     ManagementPrincipal,
+    ServicePrincipal,
     UsageServiceDep,
 )
 from mlpal_assistants_service.core.exceptions import ValidationError
@@ -35,6 +39,33 @@ from mlpal_assistants_service.schemas.api_key import (
 from mlpal_assistants_service.schemas.usage import DailyUsageResponse
 
 router = APIRouter()
+audit = structlog.get_logger("audit.keys")
+
+
+def _service_scope(principal, key_or_body_tags: dict | None, action: str) -> None:
+    """A service principal (the auth service managing HOP keyrings) may touch
+    ONLY keys tagged source=hop-keyring. Anything else is forbidden, and the
+    refusal is audited like the action would have been."""
+    if (key_or_body_tags or {}).get("source") == HOP_KEYRING_SOURCE:
+        return
+    audit.warning(
+        "hop_key.refused", action=action, actor=principal.service_name,
+        actor_kind="service", reason="key is not a hop-keyring key",
+    )
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Service identities may only manage keys tagged source=hop-keyring",
+    )
+
+
+def _audit(action: str, principal, api_key, **extra) -> None:
+    tags = api_key.tags or {}
+    audit.info(
+        f"hop_key.{action}", action=action, actor=principal.service_name,
+        actor_kind="service", actor_key_id=principal.key_id, key_id=api_key.id,
+        owner_user_id=api_key.user_id, hop_id=tags.get("hop_id"),
+        hop_key_id=tags.get("hop_key_id"), **extra,
+    )
 
 
 # Map the user-facing ?kind= filter to internal key-prefix substrings.
@@ -54,21 +85,42 @@ _KIND_TO_PREFIX = {
 )
 async def create_api_key(
     body: APIKeyCreate,
-    current_user: ManagementPrincipal,
+    current_user: KeyManager,
     api_key_service: APIKeyServiceDep,
+    act_as_user: Annotated[int | None, Header(alias="X-MLPal-Act-As-User")] = None,
 ) -> APIKeyWithSecret:
     """
     Create a new API key.
 
-    Authentication: Bearer token (JWT from Cognito)
+    Authentication: Bearer token (JWT from Cognito), or — for HOP keyring
+    bundles only — the auth service's identity (`mlpal_svc_*`, scope
+    `assistants:hop-keys`) with `X-MLPal-Act-As-User: <owner id>` and
+    `tags.source = "hop-keyring"` in the body. Every such mint is audited.
 
     The secret key is only returned once during creation.
     Store it securely - it cannot be retrieved later.
     """
+    if isinstance(current_user, ServicePrincipal):
+        _service_scope(current_user, body.tags, "create")
+        if act_as_user is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="X-MLPal-Act-As-User (owner user id) is required for service-minted keys",
+            )
+        owner_id = act_as_user
+    else:
+        if act_as_user is not None and act_as_user != current_user.id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only a service identity may act as another user",
+            )
+        owner_id = current_user.id
     api_key, secret = await api_key_service.create_key(
-        user_id=current_user.id,
+        user_id=owner_id,
         data=body,
     )
+    if isinstance(current_user, ServicePrincipal):
+        _audit("create", current_user, api_key, model_policy=api_key.model_policy)
 
     return APIKeyWithSecret(
         id=api_key.id,
@@ -204,7 +256,7 @@ async def get_api_key(
 async def update_api_key_policy(
     key_id: int,
     body: APIKeyUpdate,
-    current_user: ManagementPrincipal,
+    current_user: KeyManager,
     api_key_service: APIKeyServiceDep,
 ) -> APIKeyResponse:
     """Update the model_policy and/or budgets of an existing key.
@@ -234,12 +286,15 @@ async def update_api_key_policy(
     if "is_active" in fields and body.is_active is not None:
         updates["is_active"] = body.is_active
 
-    api_key = await api_key_service.update_key_policy(key_id, current_user.id, updates)
+    owner_id = await _owner_for(current_user, key_id, api_key_service, "update")
+    api_key = await api_key_service.update_key_policy(key_id, owner_id, updates)
     if api_key is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="API key not found",
         )
+    if isinstance(current_user, ServicePrincipal):
+        _audit("update", current_user, api_key, fields=sorted(updates))
     return APIKeyResponse(
         id=api_key.id,
         name=api_key.name,
@@ -265,7 +320,7 @@ async def update_api_key_policy(
 )
 async def revoke_api_key(
     key_id: int,
-    current_user: ManagementPrincipal,
+    current_user: KeyManager,
     api_key_service: APIKeyServiceDep,
 ) -> None:
     """
@@ -273,10 +328,12 @@ async def revoke_api_key(
 
     This permanently deactivates the key. It cannot be reactivated.
     Works for both `mlpal_sk_*` and `cde_sk_*` keys — they live in the
-    same table.
+    same table. A service identity may revoke HOP-keyring keys only
+    (audited).
     """
+    owner_id = await _owner_for(current_user, key_id, api_key_service, "revoke")
     try:
-        result = await api_key_service.revoke_key(key_id, current_user.id)
+        result = await api_key_service.revoke_key(key_id, owner_id)
     except ValidationError as e:
         # Already-revoked is a client-state conflict, not a server error.
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(e))
@@ -286,6 +343,25 @@ async def revoke_api_key(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="API key not found",
         )
+    if isinstance(current_user, ServicePrincipal):
+        _audit("revoke", current_user, result)
+
+
+async def _owner_for(principal, key_id: int, api_key_service, action: str) -> int:
+    """The user id the owner-scoped service methods must be called with: the
+    caller's own id for a management user; for a service principal, the
+    owner of the HOP-keyring key (404 if the key is not one — a service
+    identity must not be able to probe other keys' existence)."""
+    if not isinstance(principal, ServicePrincipal):
+        return principal.id
+    key = await api_key_service.get_hop_keyring_key(key_id)
+    if key is None:
+        audit.warning(
+            "hop_key.refused", action=action, actor=principal.service_name,
+            actor_kind="service", key_id=key_id, reason="not a hop-keyring key",
+        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="API key not found")
+    return key.user_id
 
 
 # ---------------------------------------------------------------------------

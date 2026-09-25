@@ -43,6 +43,25 @@ class AuthenticatedUser:
     email: str
     cognito_sub: str
 
+@dataclass
+class ServicePrincipal:
+    """A platform service (mlpal_svc_* identity validated by the auth
+    service) acting on management endpoints. `scopes` are the identity's
+    permissions as the auth service reports them."""
+
+    service_name: str
+    scopes: list[str]
+    key_id: int | None = None
+
+    def has_scope(self, scope: str) -> bool:
+        return scope in self.scopes or "*" in self.scopes
+
+
+SERVICE_KEY_PREFIX = "mlpal_svc_"
+HOP_KEYS_SCOPE = "assistants:hop-keys"
+HOP_KEYRING_SOURCE = "hop-keyring"
+
+
 # Type aliases for cleaner annotations
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
@@ -536,3 +555,78 @@ async def get_management_principal(
 
 
 ManagementPrincipal = Annotated[AuthenticatedUser, Depends(get_management_principal)]
+
+
+async def validate_service_identity(token: str, settings: Settings) -> ServicePrincipal:
+    """Validate an inbound mlpal_svc_* token with the auth service
+    (POST /v1/validate). Raises HTTPException 401 for an invalid identity and
+    503 when the auth service cannot be reached — never a silent pass."""
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
+            resp = await client.post(
+                f"{settings.auth_service_url.rstrip('/')}/v1/validate",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError as e:
+        logger.error("auth service unreachable for service-identity validation", error=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service identity validation unavailable",
+        )
+    if resp.status_code == 401:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid service identity",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if resp.status_code != 200:
+        logger.error("auth service validate failed", status=resp.status_code, body=resp.text[:200])
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Service identity validation failed",
+        )
+    data = resp.json()
+    if not data.get("valid") or not data.get("is_service") or not data.get("service_name"):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token is not a service identity",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return ServicePrincipal(
+        service_name=data["service_name"],
+        scopes=list(data.get("permissions") or []),
+        key_id=data.get("key_id"),
+    )
+
+
+async def get_key_manager(
+    authorization: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
+    api_key_service: APIKeyServiceDep = None,  # type: ignore
+    session: SessionDep = None,  # type: ignore
+    settings: SettingsDep = None,  # type: ignore
+) -> "AuthenticatedUser | ServicePrincipal":
+    """Principal for the key-management routes: the usual management user
+    (JWT, or the local admin key), OR a platform service identity
+    (mlpal_svc_*) carrying the `assistants:hop-keys` scope. The routes
+    themselves confine a service principal to HOP-keyring keys — this
+    dependency only establishes who is calling."""
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(None, 1)[1].strip()
+    elif x_api_key:
+        token = x_api_key.strip()
+    if token and token.startswith(SERVICE_KEY_PREFIX):
+        principal = await validate_service_identity(token, settings)
+        if not principal.has_scope(HOP_KEYS_SCOPE):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Service identity lacks the {HOP_KEYS_SCOPE} scope",
+            )
+        return principal
+    return await get_management_principal(authorization, x_api_key, api_key_service, session, settings)
+
+
+KeyManager = Annotated["AuthenticatedUser | ServicePrincipal", Depends(get_key_manager)]
