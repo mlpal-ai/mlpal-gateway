@@ -103,10 +103,8 @@ class Settings(BaseSettings):
     # Inbound service identities (mlpal_svc_*, minted by mlpal-auth-service)
     # are validated against the auth service. Today the only inbound service
     # caller is the auth service itself, managing HOP-keyring keys.
-    auth_service_url: str = Field(
-        default="http://mlpal-auth.mlpal.svc.cluster.local",
-        alias="MLPAL_AUTH_SERVICE_URL",
-    )
+    # Unset (OSS default) = service identities are not accepted anywhere.
+    auth_service_url: str | None = Field(default=None, alias="MLPAL_AUTH_SERVICE_URL")
     service_identity_token: str | None = Field(
         default=None,
         alias="MLPAL_SERVICE_IDENTITY_TOKEN",

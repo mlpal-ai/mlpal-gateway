@@ -563,6 +563,12 @@ async def validate_service_identity(token: str, settings: Settings) -> ServicePr
     503 when the auth service cannot be reached — never a silent pass."""
     import httpx
 
+    if not settings.auth_service_url:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Service identities are not configured on this deployment",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=2.0)) as client:
             resp = await client.post(

@@ -9,7 +9,7 @@ identity cannot even learn they exist (404).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone, UTC
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -63,6 +63,13 @@ async def test_service_identity_rejections(monkeypatch, status, payload, expect)
     with pytest.raises(HTTPException) as ei:
         await validate_service_identity("mlpal_svc_x", SETTINGS)
     assert ei.value.status_code == expect
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_auth_service_rejects_service_identities():
+    with pytest.raises(HTTPException) as ei:
+        await validate_service_identity("mlpal_svc_x", SimpleNamespace(auth_service_url=None))
+    assert ei.value.status_code == 401
 
 
 @pytest.mark.asyncio
