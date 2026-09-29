@@ -28,6 +28,7 @@ from mlpal_assistants_service.db.models.user_credits import (
     CreditType,
     UserCredits,
 )
+from mlpal_assistants_service.db.models.user_suspension import UserSuspension
 
 __all__ = [
     "TenantConnection",
@@ -44,6 +45,7 @@ __all__ = [
     "ModelRegistry",
     "ModelPricing",
     "UsageLog",
+    "UserSuspension",
     "UserBillingStatus",
     "BillingStatus",
     "UserCredits",

@@ -27,7 +27,7 @@ from mlpal_assistants_service.core.security import (
     hash_api_key,
     verify_api_key_format,
 )
-from mlpal_assistants_service.db.models import APIKey
+from mlpal_assistants_service.db.models import APIKey, UserSuspension
 from mlpal_assistants_service.schemas.api_key import APIKeyCreate
 
 logger = logging.getLogger(__name__)
@@ -167,6 +167,13 @@ class APIKeyService:
                 )
             raise InvalidAPIKeyError()
 
+        # Account-level suspension: every key of a suspended user answers with
+        # the reason. Checked on the DB path only — suspending purges the
+        # user's keys from the cache, so the next request lands here — and a
+        # suspended key is never (re)cached.
+        suspension = await self.active_suspension(key_record.user_id)
+        if suspension is not None:
+            raise APIKeySuspendedError(suspension.reason)
         # Check expiration. expires_at is TIMESTAMP WITH TIME ZONE in Postgres,
         # but some drivers/backends (and tests) hand back naive datetimes —
         # treat those as UTC so the comparison never raises
@@ -204,6 +211,57 @@ class APIKeyService:
             )
         )
         return result.scalar_one_or_none()
+
+    # ----- account suspension --------------------------------------------
+
+    async def active_suspension(self, user_id: int) -> UserSuspension | None:
+        result = await self.session.execute(
+            select(UserSuspension).where(
+                UserSuspension.user_id == user_id, UserSuspension.lifted_at.is_(None)
+            )
+        )
+        return result.scalar_one_or_none()
+
+    async def suspend_user(
+        self, user_id: int, reason: str, *, by: str, incident: str | None = None
+    ) -> UserSuspension:
+        """Suspend an account: record it (idempotent — re-suspending updates the
+        reason) and purge every key of the user from the auth cache so the
+        refusal is immediate on all instances. Keys are NOT revoked: lifting
+        the suspension restores them as they were."""
+        existing = await self.session.execute(select(UserSuspension).where(UserSuspension.user_id == user_id))
+        row = existing.scalar_one_or_none()
+        if row is None:
+            row = UserSuspension(user_id=user_id, reason=reason, suspended_by=by, incident=incident)
+            self.session.add(row)
+        else:
+            row.reason, row.suspended_by, row.incident = reason, by, incident
+            row.suspended_at, row.lifted_at, row.lifted_by = datetime.now(UTC), None, None
+        await self.session.flush()
+        await self._purge_user_keys(user_id)
+        return row
+
+    async def lift_suspension(self, user_id: int, *, by: str) -> UserSuspension | None:
+        row = await self.active_suspension(user_id)
+        if row is None:
+            return None
+        row.lifted_at, row.lifted_by = datetime.now(UTC), by
+        await self.session.flush()
+        await self._purge_user_keys(user_id)
+        return row
+
+    async def _purge_user_keys(self, user_id: int) -> None:
+        hashes = (
+            await self.session.execute(select(APIKey.key_hash).where(APIKey.user_id == user_id))
+        ).scalars().all()
+        for h in hashes:
+            if self.redis:
+                try:
+                    await self.redis.delete(f"{AUTH_CACHE_PREFIX}{h}")
+                except Exception as e:  # noqa: BLE001 — cache purge must not fail the action
+                    logger.warning(f"Failed to purge auth cache for a key: {e}")
+            if self._cache_invalidator:
+                await self._cache_invalidator.publish(f"api_key:{h}")
 
     async def get_hop_keyring_key(self, key_id: str) -> APIKey | None:
         """A key by id, ANY owner, but only if it was minted as part of a HOP

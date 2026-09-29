@@ -11,7 +11,6 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import HTTPException
 
 from mlpal_assistants_service.api.deps import get_current_api_key
 from mlpal_assistants_service.core.exceptions import APIKeySuspendedError, InvalidAPIKeyError
@@ -44,8 +43,7 @@ async def test_plain_revoked_key_stays_invalid(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_dependency_maps_suspension_to_403():
+async def test_dependency_propagates_suspension_for_the_global_handler():
     svc = MagicMock(validate_key=AsyncMock(side_effect=APIKeySuspendedError("Account suspended for suspicious activity. Contact contact@mlpal.ai.")))
-    with pytest.raises(HTTPException) as ei:
+    with pytest.raises(APIKeySuspendedError, match="contact@mlpal.ai"):
         await get_current_api_key(authorization="Bearer mlpal_sk_x", api_key_service=svc)
-    assert ei.value.status_code == 403 and "contact@mlpal.ai" in ei.value.detail

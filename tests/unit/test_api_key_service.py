@@ -107,7 +107,7 @@ class TestAPIKeyService:
         mock_key.expires_at = datetime.utcnow() - timedelta(days=1)
 
         mock_result = MagicMock()
-        mock_result.scalar_one_or_none.return_value = mock_key
+        mock_result.scalar_one_or_none.side_effect = [mock_key, None]
         mock_session.execute.return_value = mock_result
 
         valid_format_key = "mlpal_sk_" + "a" * 64

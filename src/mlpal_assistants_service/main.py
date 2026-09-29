@@ -17,6 +17,7 @@ from mlpal_assistants_service.api.mounting import mount_api
 from mlpal_assistants_service.core.cache import CacheInvalidator
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
+    APIKeySuspendedError,
     AssistantsServiceError,
     ProviderError,
     WalletEmptyError,
@@ -623,6 +624,23 @@ instrument_app(app, engine)
 
 
 # Exception handlers
+@app.exception_handler(APIKeySuspendedError)
+async def suspended_handler(request: Request, exc: APIKeySuspendedError) -> JSONResponse:
+    """Account suspended: one 403 body every client understands — the
+    console reads {code, message}, OpenAI-style clients read `detail`,
+    Anthropic SDKs read {type: error, error: {type, message}}."""
+    return JSONResponse(
+        status_code=403,
+        content={
+            "code": "account_suspended",
+            "message": exc.message,
+            "detail": exc.message,
+            "type": "error",
+            "error": {"type": "permission_error", "code": "account_suspended", "message": exc.message},
+        },
+    )
+
+
 @app.exception_handler(WalletEmptyError)
 async def wallet_empty_handler(request: Request, exc: WalletEmptyError) -> JSONResponse:
     """OpenAI-wire 402: stable machine keys for clients to render a top-up

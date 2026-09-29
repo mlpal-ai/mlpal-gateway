@@ -263,8 +263,8 @@ async def get_current_api_key(
 
     try:
         return await api_key_service.validate_key(api_key)
-    except APIKeySuspendedError as e:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+    except APIKeySuspendedError:
+        raise  # shaped by main.suspended_handler: 403 {code: account_suspended, message}
     except InvalidAPIKeyError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -383,6 +383,19 @@ async def get_current_user_from_jwt(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="User not found. Please sign up on the MLpal platform first.",
         )
+    # A suspended account cannot use the management surface either (keys,
+    # usage, settings) — same message as on the API keys.
+    suspension = (
+        await session.execute(
+            text(
+                "SELECT reason FROM assistants.user_suspensions "
+                "WHERE user_id = :uid AND lifted_at IS NULL"
+            ),
+            {"uid": user.id},
+        )
+    ).fetchone()
+    if suspension is not None:
+        raise APIKeySuspendedError(suspension.reason)
 
     return AuthenticatedUser(
         id=user.id,
@@ -442,8 +455,8 @@ async def get_current_user_flexible(
         try:
             api_key = await api_key_service.validate_key(token)
             return api_key.user_id
-        except APIKeySuspendedError as e:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        except APIKeySuspendedError:
+            raise  # shaped by main.suspended_handler
         except InvalidAPIKeyError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -544,8 +557,8 @@ async def get_management_principal(
             )
         try:
             api_key = await api_key_service.validate_key(token)
-        except APIKeySuspendedError as e:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
+        except APIKeySuspendedError:
+            raise  # shaped by main.suspended_handler
         except InvalidAPIKeyError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -646,3 +659,40 @@ async def get_key_manager(
 
 
 KeyManager = Annotated["AuthenticatedUser | ServicePrincipal", Depends(get_key_manager)]
+
+SUSPEND_SCOPE = "assistants:suspend"
+
+
+async def get_suspension_principal(
+    authorization: Annotated[str | None, Header()] = None,
+    x_api_key: Annotated[str | None, Header(alias="x-api-key")] = None,
+    api_key_service: APIKeyServiceDep = None,  # type: ignore
+    session: SessionDep = None,  # type: ignore
+    settings: SettingsDep = None,  # type: ignore
+) -> "AuthenticatedUser | ServicePrincipal":
+    """Who may suspend accounts: a platform service identity with the
+    `assistants:suspend` scope (the backend's admin action), or — on a
+    local/OSS box — the admin API key. A managed-mode user JWT is NOT enough:
+    suspension is an operator action, never self-service."""
+    token = None
+    if authorization and authorization.lower().startswith("bearer "):
+        token = authorization.split(None, 1)[1].strip()
+    elif x_api_key:
+        token = x_api_key.strip()
+    if token and token.startswith(SERVICE_KEY_PREFIX):
+        principal = await validate_service_identity(token, settings)
+        if not principal.has_scope(SUSPEND_SCOPE):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Service identity lacks the {SUSPEND_SCOPE} scope",
+            )
+        return principal
+    if getattr(settings, "auth_backend", "managed") == "local":
+        return await get_management_principal(authorization, x_api_key, api_key_service, session, settings)
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Account suspension requires a platform service identity",
+    )
+
+
+SuspensionPrincipal = Annotated["AuthenticatedUser | ServicePrincipal", Depends(get_suspension_principal)]
