@@ -88,6 +88,13 @@ class CanonicalUsage:
             raw=None,
         )
 
+    def prompt_total(self) -> int:
+        """The prompt as providers size it for context tiers: every token
+        sent, cached and cache-written subsets included. Both constructors
+        already fold those subsets into `input` (OpenAI/Google report it that
+        way; from_anthropic sums every input-side class), so this is `input`."""
+        return int(self.input)
+
     def compute_units(
         self,
         input_cu_per_token: Decimal,

@@ -85,6 +85,21 @@ class ModelPricing(Base, TimestampMixin):
         nullable=True,
     )
 
+    # Long-context tier (migration 20260929_1100): when a request's prompt
+    # (input incl. cached + written tokens) EXCEEDS long_context_threshold,
+    # input/output bill at the long rates; cache reads at long_cache_read_rate
+    # (NULL = provider multiple of long_input_rate); cache writes at the
+    # standard write multiple of long_input_rate. NULL threshold = no tier.
+    long_context_threshold: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    long_input_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8), nullable=True)
+    long_output_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8), nullable=True)
+    long_cache_read_rate: Mapped[Decimal | None] = mapped_column(Numeric(12, 8), nullable=True)
+
+    def long_tier_applies(self, prompt_units: int | Decimal) -> bool:
+        from mlpal_assistants_service.services.pricing import long_tier_applies
+
+        return long_tier_applies(self, prompt_units)
+
     # Rate unit description
     rate_unit: Mapped[str] = mapped_column(
         String(50),

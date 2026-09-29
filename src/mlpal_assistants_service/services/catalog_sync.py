@@ -56,10 +56,12 @@ PRICING_KEY = ("model_tag", "operation")
 PRICING_FIELDS = (
     "tier", "input_rate", "output_rate", "cache_read_rate", "image_input_rate",
     "rate_unit", "markup_multiplier", "cu_to_dollar",
+    "long_context_threshold", "long_input_rate", "long_output_rate", "long_cache_read_rate",
 )
 _NUMERIC = {
     "input_rate", "output_rate", "cache_read_rate", "image_input_rate",
     "markup_multiplier", "cu_to_dollar",
+    "long_input_rate", "long_output_rate", "long_cache_read_rate",
 }
 
 

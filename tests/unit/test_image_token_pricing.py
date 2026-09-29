@@ -66,7 +66,7 @@ def test_redis_serializer_round_trips_image_input_rate_and_prefix_bumped():
     row.cache_read_rate = None
     back = svc._dict_to_pricing(svc._pricing_to_dict(row))
     assert back.image_input_rate == Decimal("8") and back.cache_read_rate is None
-    assert PricingService.CACHE_PREFIX == "pricing:v3:"   # new column → new prefix (serializer rule)
+    assert PricingService.CACHE_PREFIX == "pricing:v4:"   # new column → new prefix (serializer rule; v4 = long-context tier)
 
 
 def test_openai_quality_ladder_maps_per_model():

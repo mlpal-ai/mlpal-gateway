@@ -259,7 +259,11 @@
     "effective_date": "2026-01-26",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.37500000",
-    "output_cu_rate": "3.00000000"
+    "output_cu_rate": "3.00000000",
+    "long_context_threshold": 200000,
+    "long_input_rate": "2.50000000",
+    "long_output_rate": "15.00000000",
+    "long_cache_read_rate": null
   },
   {
     "model_tag": "gemini-3-flash-preview",
@@ -363,7 +367,12 @@
     "effective_date": "2026-03-06",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.60000000",
-    "output_cu_rate": "3.60000000"
+    "output_cu_rate": "3.60000000",
+    "long_context_threshold": 200000,
+    "long_input_rate": "4.00000000",
+    "long_output_rate": "18.00000000",
+    "long_cache_read_rate": "0.40000000",
+    "cache_read_rate": "0.20000000"
   },
   {
     "model_tag": "gemini-3.5-flash",
@@ -766,7 +775,11 @@
     "effective_date": "2026-07-30",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.06000000",
-    "output_cu_rate": "0.36000000"
+    "output_cu_rate": "0.36000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "0.40000000",
+    "long_output_rate": "1.80000000",
+    "long_cache_read_rate": "0.04000000"
   },
   {
     "model_tag": "gpt-6-astra",
@@ -779,7 +792,11 @@
     "effective_date": "2026-09-07",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "3.00000000",
-    "output_cu_rate": "15.00000000"
+    "output_cu_rate": "15.00000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "20.00000000",
+    "long_output_rate": "75.00000000",
+    "long_cache_read_rate": "2.00000000"
   },
   {
     "model_tag": "gpt-6-sol",
@@ -792,7 +809,11 @@
     "effective_date": "2026-09-22",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.60000000",
-    "output_cu_rate": "3.00000000"
+    "output_cu_rate": "3.00000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "4.00000000",
+    "long_output_rate": "15.00000000",
+    "long_cache_read_rate": "0.40000000"
   },
   {
     "model_tag": "gpt-6-luna",
@@ -805,7 +826,11 @@
     "effective_date": "2026-09-22",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.03000000",
-    "output_cu_rate": "0.15000000"
+    "output_cu_rate": "0.15000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "0.20000000",
+    "long_output_rate": "0.75000000",
+    "long_cache_read_rate": "0.02000000"
   },
   {
     "model_tag": "gpt-5.6-sol",
@@ -818,7 +843,11 @@
     "effective_date": "2026-08-21",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "1.20000000",
-    "output_cu_rate": "6.00000000"
+    "output_cu_rate": "6.00000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "8.00000000",
+    "long_output_rate": "30.00000000",
+    "long_cache_read_rate": "0.80000000"
   },
   {
     "model_tag": "gpt-5.6-terra",
@@ -831,7 +860,11 @@
     "effective_date": "2026-07-30",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.60000000",
-    "output_cu_rate": "3.60000000"
+    "output_cu_rate": "3.60000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "4.00000000",
+    "long_output_rate": "18.00000000",
+    "long_cache_read_rate": "0.40000000"
   },
   {
     "model_tag": "gpt-image-1",

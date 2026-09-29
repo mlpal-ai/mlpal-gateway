@@ -11,6 +11,7 @@ import json
 import logging
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 import redis.asyncio as redis
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,6 +29,18 @@ logger = logging.getLogger(__name__)
 # input rate; OpenAI and Anthropic at 10%. Per-model exceptions live in
 # ModelPricing.cache_read_rate (e.g. claude-fable-5-1 at $0.25/MTok).
 _PROVIDER_CACHE_READ_MULTIPLIER = {"google": Decimal("0.25")}
+
+
+def long_tier_applies(pricing: Any, prompt_units: int | Decimal) -> bool:
+    """Whether a request's prompt (all tokens sent, cached and written subsets
+    included) falls in the row's long-context tier. Attribute-tolerant so
+    rows from any source (ORM, cache, test doubles) behave the same."""
+    threshold = getattr(pricing, "long_context_threshold", None)
+    if threshold is None or getattr(pricing, "long_input_rate", None) is None:
+        return False
+    if getattr(pricing, "long_output_rate", None) is None:
+        return False
+    return Decimal(prompt_units) > Decimal(threshold)
 
 
 def provider_cache_read_multiplier(provider: str | None) -> Decimal:
@@ -67,7 +80,7 @@ class PricingService:
     CACHE_TTL = 3600  # 1 hour
     # Version the key whenever the serialized row shape changes: entries cached
     # under an older prefix are simply never read again (v2: + cache_read_rate).
-    CACHE_PREFIX = "pricing:v3:"
+    CACHE_PREFIX = "pricing:v4:"
 
     def __init__(
         self,
@@ -176,6 +189,27 @@ class PricingService:
         cached = Decimal(cached_units or 0)
         write_5m = Decimal(cache_write_5m_units or 0)
         write_1h = Decimal(cache_write_1h_units or 0)
+        # The prompt as the provider sizes it for context tiers: everything
+        # sent, cached and written subsets included.
+        prompt_total = Decimal(input_units)
+        if not cached_included:
+            prompt_total += cached + write_5m + write_1h
+        if long_tier_applies(pricing, prompt_total):
+            # Long-context tier: list rates straight from the row (no legacy
+            # markup on these columns), same shape as the standard path.
+            uncached_input = prompt_total - cached - write_5m - write_1h
+            cache_rate = getattr(pricing, "long_cache_read_rate", None)
+            if cache_rate is None:
+                cache_rate = pricing.long_input_rate * provider_cache_read_multiplier(provider)
+            settings = get_settings()
+            dollars = (
+                uncached_input * pricing.long_input_rate
+                + Decimal(output_units) * pricing.long_output_rate
+                + cached * cache_rate
+                + pricing.long_input_rate
+                * (write_5m * settings.cache_5m_write_multiplier + write_1h * settings.cache_1h_write_multiplier)
+            )
+            return dollars / divisor / cu_to_dollar + image_extra
         if cached <= 0 and write_5m <= 0 and write_1h <= 0:
             return pricing.calculate_provider_cost(input_units, output_units) + image_extra
 
@@ -455,6 +489,12 @@ class PricingService:
                 if getattr(pricing, "image_input_rate", None) is not None
                 else None
             ),
+            # Long-context tier (v4 prefix): must round-trip like cache_read_rate.
+            "long_context_threshold": getattr(pricing, "long_context_threshold", None),
+            **{
+                f: (str(getattr(pricing, f)) if getattr(pricing, f, None) is not None else None)
+                for f in ("long_input_rate", "long_output_rate", "long_cache_read_rate")
+            },
         }
 
     def _dict_to_pricing(self, data: dict) -> ModelPricing:
@@ -479,4 +519,9 @@ class PricingService:
         pricing.cache_read_rate = Decimal(crr) if crr is not None else None
         iir = data.get("image_input_rate")
         pricing.image_input_rate = Decimal(iir) if iir is not None else None
+        lct = data.get("long_context_threshold")
+        pricing.long_context_threshold = int(lct) if lct is not None else None
+        for f in ("long_input_rate", "long_output_rate", "long_cache_read_rate"):
+            v = data.get(f)
+            setattr(pricing, f, Decimal(v) if v is not None else None)
         return pricing

@@ -127,6 +127,9 @@ class MessagesV2Core:
         self._rate_limiter = rate_limiter
         self._policy = policy
         self._settings = get_settings()
+        # model_tag -> (threshold, (in_cu, out_cu, cache_cu)) for models with a
+        # long-context price tier; filled by _resolve_cu_rates.
+        self._long_tiers: dict[str, tuple[int, tuple[Decimal, Decimal, Decimal | None]]] = {}
 
     # -- admission policy ---------------------------------------------------
     def _model_allowed(self, model: Any) -> bool:
@@ -792,6 +795,10 @@ class MessagesV2Core:
                 logger.warning(f"[v2.messages] no pricing for {ctx.model_tag}; CU=0 trace={ctx.trace_id}")
             else:
                 in_cu, out_cu, cache_cu = rates
+                long_tier = self.long_tiers.get(ctx.model_tag)
+                if long_tier is not None and ctx.usage.prompt_total() > long_tier[0]:
+                    in_cu, out_cu, cache_cu = long_tier[1]
+                    ctx.cc_metadata["context_tier"] = "long"
                 if cache_cu is None:
                     # No per-model cache-read list price: the provider's
                     # standard multiple applies (google 0.25x, else 0.10x).
@@ -906,6 +913,13 @@ class MessagesV2Core:
             return Decimal("0")
         return compute_units
 
+    @property
+    def long_tiers(self) -> dict[str, tuple[int, tuple[Decimal, Decimal, Decimal | None]]]:
+        # Lazily created: MessagesV2Core is sometimes built without __init__ in tests.
+        if not hasattr(self, "_long_tiers"):
+            self._long_tiers = {}
+        return self._long_tiers
+
     async def _resolve_cu_rates(
         self, model_tag: str
     ) -> tuple[Decimal, Decimal, Decimal | None] | None:
@@ -929,11 +943,32 @@ class MessagesV2Core:
             if cache_read is not None
             else None
         )
-        return (
+        cu_to_dollar = getattr(pricing, "cu_to_dollar", None) or Decimal("10")
+        standard = (
             pricing.input_cu_rate / divisor / markup,
             pricing.output_cu_rate / divisor / markup,
             cache_read_cu,
         )
+        # Long-context tier: the provider re-prices the WHOLE request once the
+        # prompt exceeds the threshold (OpenAI > 272K, Gemini Pro > 200K).
+        threshold = getattr(pricing, "long_context_threshold", None)
+        if (
+            threshold is not None
+            and getattr(pricing, "long_input_rate", None) is not None
+            and getattr(pricing, "long_output_rate", None) is not None
+        ):
+            long_cache = getattr(pricing, "long_cache_read_rate", None)
+            self.long_tiers[model_tag] = (
+                int(threshold),
+                (
+                    pricing.long_input_rate / divisor / cu_to_dollar,
+                    pricing.long_output_rate / divisor / cu_to_dollar,
+                    long_cache / divisor / cu_to_dollar if long_cache is not None else None,
+                ),
+            )
+        else:
+            self.long_tiers.pop(model_tag, None)
+        return standard
 
     async def _post_billing(self, ctx: RequestContext, compute_units: Decimal, total_tokens: int) -> None:
         """Post-response billing, mirroring /v1/chat's background flow: gated
