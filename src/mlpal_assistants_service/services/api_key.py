@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
+    APIKeySuspendedError,
     InvalidAPIKeyError,
     ValidationError,
 )
@@ -152,6 +153,18 @@ class APIKeyService:
         key_record = result.scalar_one_or_none()
 
         if key_record is None:
+            # A suspended key answers with its reason (403 via the auth
+            # dependency) instead of a bare "invalid key", so the account
+            # holder knows whom to contact. Any other inactive key stays 401.
+            suspended = await self.session.execute(
+                select(APIKey.tags).where(APIKey.key_hash == key_hash, APIKey.is_active == False)  # noqa: E712
+            )
+            tags = suspended.scalar_one_or_none() or {}
+            if tags.get("suspended"):
+                raise APIKeySuspendedError(
+                    tags.get("suspended_reason")
+                    or "Account suspended for suspicious activity. Contact contact@mlpal.ai."
+                )
             raise InvalidAPIKeyError()
 
         # Check expiration. expires_at is TIMESTAMP WITH TIME ZONE in Postgres,

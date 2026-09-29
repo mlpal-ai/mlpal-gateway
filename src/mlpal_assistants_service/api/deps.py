@@ -16,7 +16,11 @@ from mlpal_assistants_service.core.auth import (
 )
 from mlpal_assistants_service.core.cache import CacheInvalidator
 from mlpal_assistants_service.core.config import Settings, get_settings
-from mlpal_assistants_service.core.exceptions import InvalidAPIKeyError, RateLimitExceededError
+from mlpal_assistants_service.core.exceptions import (
+    APIKeySuspendedError,
+    InvalidAPIKeyError,
+    RateLimitExceededError,
+)
 from mlpal_assistants_service.core.security import is_known_api_key_prefix
 from mlpal_assistants_service.core.storage import AssetStorageService
 from mlpal_assistants_service.db.models import APIKey
@@ -259,6 +263,8 @@ async def get_current_api_key(
 
     try:
         return await api_key_service.validate_key(api_key)
+    except APIKeySuspendedError as e:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
     except InvalidAPIKeyError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -436,6 +442,8 @@ async def get_current_user_flexible(
         try:
             api_key = await api_key_service.validate_key(token)
             return api_key.user_id
+        except APIKeySuspendedError as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         except InvalidAPIKeyError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -536,6 +544,8 @@ async def get_management_principal(
             )
         try:
             api_key = await api_key_service.validate_key(token)
+        except APIKeySuspendedError as e:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(e))
         except InvalidAPIKeyError as e:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,

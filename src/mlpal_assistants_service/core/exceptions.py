@@ -38,6 +38,16 @@ class InvalidAPIKeyError(AuthenticationError):
         super().__init__(message)
 
 
+class APIKeySuspendedError(AssistantsServiceError):
+    """The key (and its account) was suspended by an operator; the message
+    tells the holder whom to contact. Surfaces as 403, never as 'invalid key'."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, {"code": "account_suspended"})
+        self.status_code = 403
+
+
+
 class RateLimitExceededError(AssistantsServiceError):
     """Raised when rate limit is exceeded."""
 
