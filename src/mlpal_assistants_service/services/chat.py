@@ -564,6 +564,7 @@ class ChatService:
         trace_id = str(uuid.uuid4())
         start_time = time.perf_counter()
         served_backend: str | None = None  # for failure-row attribution
+        conn = None  # tenant connection, if one serves this request (set after the gate)
 
         try:
             # 1. Check rate limits (pipelined — single Redis round-trip)
@@ -961,6 +962,7 @@ class ChatService:
         trace_id = str(uuid.uuid4())
         start_time = time.perf_counter()
         served_backend: str | None = None  # for failure-row attribution
+        conn = None  # tenant connection, if one serves this request (set after the gate)
 
         try:
             # 1. Check rate limits
