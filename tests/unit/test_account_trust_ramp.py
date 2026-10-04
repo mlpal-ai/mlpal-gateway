@@ -186,3 +186,19 @@ async def test_held_is_cached_and_refuses_every_request(monkeypatch):
     svc2.validate_key = AsyncMock(return_value=SimpleNamespace(user_id=6, id=2))
     key = await deps.get_current_api_key(authorization="Bearer k", api_key_service=svc2)
     assert key.user_id == 6
+
+
+# -- lifetime counters no longer live forever (HOP lease prerequisite) --------------
+def test_lifetime_counter_ttl_is_bounded_and_capped_by_key_expiry():
+    from datetime import UTC, datetime, timedelta
+
+    from mlpal_assistants_service.services import policy as pol
+
+    p = PolicyService(FakeRedis(), MagicMock(), settings=SETTINGS)
+    now = datetime.now(UTC)
+    assert p._ttl_seconds("lifetime", now) == pol._LIFETIME_TTL
+    short = p._ttl_seconds("lifetime", now, expires_at=now + timedelta(minutes=15))
+    assert 15 * 60 <= short <= 15 * 60 + pol._TTL_GRACE + 5
+    # a daily window is also capped to the key's expiry, never below the grace
+    assert p._ttl_seconds("daily", now, expires_at=now - timedelta(hours=2)) == pol._TTL_GRACE
+    assert p._ttl_seconds("daily", now, expires_at=now + timedelta(days=5)) <= 86400 + pol._TTL_GRACE

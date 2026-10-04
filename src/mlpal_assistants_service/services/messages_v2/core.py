@@ -462,7 +462,11 @@ class MessagesV2Core:
                     resolved=model.model_tag,
                 )
                 await self._policy.check_budgets(
-                    api_key.id, getattr(api_key, "budgets", None), user_id=api_key.user_id,)
+                    api_key.id,
+                    getattr(api_key, "budgets", None),
+                    user_id=api_key.user_id,
+                    expires_at=getattr(api_key, "expires_at", None),
+                )
         except RateLimitExceededError as e:
             return Response(error_body(429, str(e)), 429, media_type="application/json")
         except (ModelAccessDeniedError, BudgetExceededError) as e:
@@ -1073,7 +1077,12 @@ class MessagesV2Core:
                 await self._rate_limiter.record_tokens(str(ctx.api_key.user_id), total_tokens)
             if self._policy is not None:
                 await self._policy.record_key_usage(
-                    ctx.api_key.id, getattr(ctx.api_key, "budgets", None), compute_units, user_id=ctx.api_key.user_id,)
+                    ctx.api_key.id,
+                    getattr(ctx.api_key, "budgets", None),
+                    compute_units,
+                    user_id=ctx.api_key.user_id,
+                    expires_at=getattr(ctx.api_key, "expires_at", None),
+                )
         except Exception:  # pragma: no cover — billing telemetry must never crash the loop
             logger.exception(
                 f"[v2.messages] post-billing failed user={ctx.api_key.user_id} trace={ctx.trace_id}"

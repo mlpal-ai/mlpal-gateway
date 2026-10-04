@@ -48,6 +48,11 @@ _COUNTER_PREFIX = "kbudget:"
 # Seconds a window counter lives past the window's end before Redis evicts it —
 # a small grace so a request completing right at the boundary still accrues.
 _TTL_GRACE = 3600
+# A lifetime counter used to live forever in Redis. It is a cache over
+# usage_logs (a miss re-seeds from the DB), so it may expire: 30 days after the
+# last accrual, or — when the caller knows the key's expiry (short-lived HOP
+# lease keys: two per turn) — shortly after the key itself dies.
+_LIFETIME_TTL = 30 * 24 * 3600
 
 
 # ---------------------------------------------------------------------------
@@ -192,17 +197,33 @@ class PolicyService:
         # are "user:<id>" (young-account daily ceiling).
         return f"{_COUNTER_PREFIX}{subject}:{window}:{wid}"
 
-    def _ttl_seconds(self, window: str, now_local: datetime) -> int | None:
+    def _ttl_seconds(
+        self, window: str, now_local: datetime, expires_at: datetime | None = None
+    ) -> int | None:
+        """Counter TTL: to the window's end (+grace); lifetime windows 30 days
+        from the last touch; either capped to the key's own expiry when known."""
         if window == "lifetime":
-            return None
-        _, end_utc = window_bounds(window, now_local)
-        if end_utc is None:
-            return None
-        secs = int((end_utc - datetime.now(UTC)).total_seconds()) + _TTL_GRACE
-        return max(secs, _TTL_GRACE)
+            secs = _LIFETIME_TTL
+        else:
+            _, end_utc = window_bounds(window, now_local)
+            if end_utc is None:
+                secs = _LIFETIME_TTL
+            else:
+                secs = max(int((end_utc - datetime.now(UTC)).total_seconds()) + _TTL_GRACE, _TTL_GRACE)
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=UTC)
+            key_secs = max(int((expires_at - datetime.now(UTC)).total_seconds()) + _TTL_GRACE, _TTL_GRACE)
+            secs = min(secs, key_secs)
+        return secs
 
     async def _window_spend_cu(
-        self, subject: int | str, window: str, now_local: datetime, reconcile: Any
+        self,
+        subject: int | str,
+        window: str,
+        now_local: datetime,
+        reconcile: Any,
+        expires_at: datetime | None = None,
     ) -> Decimal:
         """Current-window spend in CU. Redis counter, re-seeded from the DB window
         sum (`reconcile(start, end)`) on miss. Fails OPEN (0) if both stores are
@@ -223,11 +244,7 @@ class PolicyService:
             return Decimal(0)
         # Seed the counter so subsequent requests are Redis-only for this window.
         try:
-            ttl = self._ttl_seconds(window, now_local)
-            if ttl is not None:
-                await self._redis.set(ckey, str(spent), ex=ttl)
-            else:
-                await self._redis.set(ckey, str(spent))
+            await self._redis.set(ckey, str(spent), ex=self._ttl_seconds(window, now_local, expires_at))
         except Exception:  # noqa: BLE001 — best-effort seed
             logger.debug("policy: budget counter seed failed for %s", ckey, exc_info=True)
         return spent
@@ -240,6 +257,7 @@ class PolicyService:
         *,
         label: str = "Spend budget exhausted",
         hint: str | None = None,
+        expires_at: datetime | None = None,
     ) -> None:
         now_local = self._now_local()
         # Hot path: read every window counter in ONE pipeline round trip; the
@@ -261,7 +279,7 @@ class PolicyService:
             limit_cu = self._to_cu(amount, unit)
             spent_cu = spend.get(window)
             if spent_cu is None:
-                spent_cu = await self._window_spend_cu(subject, window, now_local, reconcile)
+                spent_cu = await self._window_spend_cu(subject, window, now_local, reconcile, expires_at)
                 spend[window] = spent_cu
             if spent_cu >= limit_cu:
                 _, end_utc = window_bounds(window, now_local)
@@ -277,7 +295,11 @@ class PolicyService:
                 )
 
     async def check_budgets(
-        self, api_key_id: int, budgets: list[dict] | None, user_id: int | str | None = None
+        self,
+        api_key_id: int,
+        budgets: list[dict] | None,
+        user_id: int | str | None = None,
+        expires_at: datetime | None = None,
     ) -> None:
         """Raise BudgetExceededError if ANY of the key's budget windows is at/over
         its cap (deny when spent >= limit: bounded single-request overage), or,
@@ -288,6 +310,7 @@ class PolicyService:
                 api_key_id,
                 budgets,
                 lambda s, e: self._usage_repo.get_api_key_cu_in_window(api_key_id, s, e),
+                expires_at=expires_at,
             )
         if user_id is not None and self._trust is not None:
             ceiling = await self._trust.daily_ceiling_cu(user_id)
@@ -310,6 +333,7 @@ class PolicyService:
         budgets: list[dict] | None,
         cu: Decimal | float,
         user_id: int | str | None = None,
+        expires_at: datetime | None = None,
     ) -> None:
         """Accrue `cu` onto every window this key budgets on, and onto the
         account's daily counter when a ramp applies. Best-effort, pipelined;
@@ -349,9 +373,8 @@ class PolicyService:
                 wid = window_id(window, now_local)
                 ckey = self._counter_key(subject, window, wid)
                 pipe.eval(lua, 1, ckey, float(cu))
-                ttl = self._ttl_seconds(window, now_local)
-                if ttl is not None:
-                    pipe.expire(ckey, ttl)
+                # the account counter is not bound to any one key's expiry
+                pipe.expire(ckey, self._ttl_seconds(window, now_local, None if subject != api_key_id else expires_at))
             await pipe.execute()
         except Exception:  # noqa: BLE001
             logger.warning("policy: budget accrual failed for key %s", api_key_id, exc_info=True)
