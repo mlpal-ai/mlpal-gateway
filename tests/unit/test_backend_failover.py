@@ -152,7 +152,7 @@ def _once(fail_with: Exception | None, *, backend="bedrock", conn_served=False):
         ProviderError("boom", provider="anthropic", status_code=503),
         ProviderError("throttled", provider="anthropic", status_code=429),
         CircuitBreakerOpen("anthropic:bedrock", 30.0),
-        TimeoutError(),
+        ConnectionError(),
     ],
 )
 async def test_chat_hops_once_on_serving_fault(monkeypatch, fault):

@@ -103,6 +103,7 @@ def _key(id=41, user_id=115, tags=None):
 @pytest.mark.asyncio
 async def test_service_create_requires_hop_tag_and_act_as(monkeypatch):
     svc = MagicMock()
+    svc.hold_reason = AsyncMock(return_value=None)
     svc.create_key = AsyncMock(return_value=(_key(tags={"source": "hop-keyring", "hop_id": "h1"}), "secret"))
     body = APIKeyCreate(name="bundle", tags={"source": "hop-keyring", "hop_id": "h1", "hop_key_id": "hk1"})
     with pytest.raises(HTTPException) as ei:
@@ -118,6 +119,7 @@ async def test_service_create_requires_hop_tag_and_act_as(monkeypatch):
 @pytest.mark.asyncio
 async def test_user_cannot_act_as_another_user():
     svc = MagicMock()
+    svc.hold_reason = AsyncMock(return_value=None)
     svc.create_key = AsyncMock(return_value=(_key(), "s"))
     user = SimpleNamespace(id=7)
     with pytest.raises(HTTPException) as ei:

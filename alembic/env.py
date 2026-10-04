@@ -13,7 +13,10 @@ config = context.config
 
 # Setup logging
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: the app runs migrations in-process at startup;
+    # the default (True) silently disables every logger created before this
+    # point — all of the service's own stdlib loggers.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # Model metadata for autogenerate
 target_metadata = Base.metadata

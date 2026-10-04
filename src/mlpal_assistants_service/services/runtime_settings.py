@@ -123,7 +123,7 @@ async def set_value(session: Any, name: str, value: str | None) -> None:
         _store[name] = value
     _invalidate_dependents()
     logger.info(
-        "Runtime setting changed", extra={"name": name, "value": value or "(cleared)"}
+        "Runtime setting changed", extra={"setting": name, "value": value or "(cleared)"}
     )
 
 

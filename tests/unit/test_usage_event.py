@@ -11,6 +11,7 @@ disconnects mid-stream is still metered exactly once.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from decimal import Decimal
 from unittest.mock import AsyncMock
@@ -101,8 +102,11 @@ async def test_disconnect_mid_stream_is_metered_once_without_trailer():
     gen = core._stream_with_heartbeat(_Edge(), req, _ctx({"x-mlpal-usage-event": "1"}), 0.0)
     first = await gen.__anext__()
     assert first == FRAMES[0]
+    core._meter_detached = AsyncMock()
     await gen.aclose()  # client went away
-    core._meter.assert_awaited_once()
+    await asyncio.sleep(0)  # the metering runs detached from the cancelled request task
+    core._meter.assert_not_awaited()
+    core._meter_detached.assert_awaited_once()
 
 
 @pytest.mark.asyncio

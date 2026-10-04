@@ -13,7 +13,9 @@ import redis.asyncio as aioredis
 
 if TYPE_CHECKING:
     from mlpal_assistants_service.core.cache import CacheInvalidator
-from sqlalchemy import select, update
+from decimal import Decimal
+
+from sqlalchemy import select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mlpal_assistants_service.core.config import get_settings
@@ -28,9 +30,34 @@ from mlpal_assistants_service.core.security import (
     verify_api_key_format,
 )
 from mlpal_assistants_service.db.models import APIKey, UserSuspension
+from mlpal_assistants_service.observability.client import get_client_ip, get_client_ua_hash
 from mlpal_assistants_service.schemas.api_key import APIKeyCreate
 
 logger = logging.getLogger(__name__)
+
+# Byte-identical to the backend's HOP key-route sentence so both surfaces render one message.
+HOLD_MESSAGE = (
+    "Your account needs a verified card before API keys can be created. "
+    "Add a payment method in Billing, or contact contact@mlpal.ai."
+)
+
+
+def default_key_budgets(tier: str) -> list[dict] | None:
+    """Budgets a new key gets when the caller sets none: one daily CU cap by
+    tier (enterprise: none). Bounds the blast radius of any single key —
+    230 of the keys live during the 2026-09-28 incident had no budget at all."""
+    amount = Decimal(str(get_settings().default_key_daily_budget_cu))
+    if tier == "enterprise" or amount <= 0:
+        return None
+    return [{"id": "default-daily", "unit": "cu", "amount": float(amount), "window": "daily"}]
+
+
+def hold_cache_key(user_id: int | str) -> str:
+    return f"hold:{user_id}"
+
+
+# None = not probed yet; probed once per process (see APIKeyService.hold_reason)
+_HOLD_COLUMN_PRESENT: bool | None = None
 
 # Strong refs for fire-and-forget tasks (create_task alone is GC-collectable).
 _BACKGROUND_TASKS: set = set()
@@ -96,12 +123,18 @@ class APIKeyService:
             expires_at=data.expires_at,
             tags=data.tags or {},
             model_policy=data.model_policy.model_dump() if data.model_policy else None,
-            budgets=[b.model_dump() for b in data.budgets] if data.budgets else None,
+            budgets=(
+                [b.model_dump() for b in data.budgets]
+                if data.budgets
+                else default_key_budgets(getattr(data, "rate_limit_tier", None) or "standard")
+            ),
             capture_policy=(
                 data.capture_policy.model_dump(exclude_none=True)
                 if getattr(data, "capture_policy", None)
                 else None
             ),
+            created_ip=get_client_ip(),
+            created_ua_hash=get_client_ua_hash(),
         )
 
         self.session.add(api_key)
@@ -221,6 +254,59 @@ class APIKeyService:
             )
         )
         return result.scalar_one_or_none()
+
+    async def held(self, user_id: int | str) -> bool:
+        """Request-time hold check (every authenticated call on every wire):
+        the hold_reason lookup behind a short Redis cache so a held account
+        is refused everywhere, not only at key minting. The backend drops the
+        cache entry when it releases the hold."""
+        if not self.redis:
+            return bool(await self.hold_reason(user_id))
+        key = hold_cache_key(user_id)
+        try:
+            cached = await self.redis.get(key)
+        except Exception:  # noqa: BLE001 — cache fault: fall through to the lookup
+            cached = None
+        if cached is not None:
+            return (cached.decode() if isinstance(cached, bytes) else cached) == "1"
+        held = bool(await self.hold_reason(user_id))
+        try:
+            await self.redis.setex(key, int(get_settings().hold_cache_ttl_seconds), "1" if held else "0")
+        except Exception:  # noqa: BLE001 — best effort
+            pass
+        return held
+
+    async def hold_reason(self, user_id: int | str) -> str | None:
+        """Signup-risk hold on the account, read from the user schema's
+        `hold_reason` column (set by the backend's signup scorer, cleared when
+        a payment method is verified). Deployments whose user schema has no
+        such column (OSS, older backends) never hold: the capability is probed
+        once per process and cached, and a lookup error is logged, not raised —
+        a hold check must never break key management."""
+        global _HOLD_COLUMN_PRESENT
+        if _HOLD_COLUMN_PRESENT is False:
+            return None
+        schema = get_settings().user_schema
+        try:
+            if _HOLD_COLUMN_PRESENT is None:
+                probe = await self.session.execute(
+                    text(
+                        "SELECT 1 FROM information_schema.columns "
+                        "WHERE table_schema = :s AND table_name = 'users' AND column_name = 'hold_reason'"
+                    ),
+                    {"s": schema},
+                )
+                _HOLD_COLUMN_PRESENT = probe.first() is not None
+                if not _HOLD_COLUMN_PRESENT:
+                    return None
+            row = await self.session.execute(
+                text(f"SELECT hold_reason FROM {schema}.users WHERE id = :uid"), {"uid": int(user_id)}
+            )
+            value = row.scalar_one_or_none()
+            return value or None
+        except Exception as e:  # noqa: BLE001 — never block key management on this lookup
+            logger.warning("hold_reason lookup failed for user %s: %s", user_id, e)
+            return None
 
     async def suspend_user(
         self, user_id: int, reason: str, *, by: str, incident: str | None = None

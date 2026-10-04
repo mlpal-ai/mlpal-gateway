@@ -67,6 +67,8 @@ def _core():
     usage.redis = None
     billing = MagicMock()
     billing.can_make_request_cached = AsyncMock(return_value=(True, None, True))
+    billing.reserve_inflight = AsyncMock(return_value=(None, None))
+    billing.release_inflight = AsyncMock()
     billing.is_wallet_debit_active = AsyncMock(return_value=True)
     billing.debit_wallet_usage = AsyncMock()
     core = MessagesV2Core(router, usage, pricing, billing)

@@ -5,6 +5,7 @@ Thin API layer that delegates to ChatService for orchestration.
 
 import asyncio
 import json
+import logging
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
@@ -30,6 +31,8 @@ from mlpal_assistants_service.schemas.chat import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -187,16 +190,17 @@ async def create_chat_completion_stream(
         queue: asyncio.Queue = asyncio.Queue(maxsize=_STREAM_QUEUE_MAXSIZE)
 
         async def _produce() -> None:
+            stream = chat_service.chat_stream(
+                user_id=api_key.user_id,
+                api_key_id=api_key.id,
+                request=body,
+                tier=api_key.rate_limit_tier,
+                model_policy=api_key.model_policy,
+                budgets=api_key.budgets,
+                capture_policy=api_key.capture_policy,
+            )
             try:
-                async for chunk in chat_service.chat_stream(
-                    user_id=api_key.user_id,
-                    api_key_id=api_key.id,
-                    request=body,
-                    tier=api_key.rate_limit_tier,
-                    model_policy=api_key.model_policy,
-                    budgets=api_key.budgets,
-                    capture_policy=api_key.capture_policy,
-                ):
+                async for chunk in stream:
                     await queue.put(("chunk", chunk))
             except QuotaExceededError as e:
                 await queue.put(("error", {"error": e.message, "done": True}))
@@ -205,6 +209,16 @@ async def create_chat_completion_stream(
             except Exception as e:  # noqa: BLE001
                 await queue.put(("error", {"error": str(e), "done": True}))
             finally:
+                # A cancel that lands on `queue.put` leaves the service
+                # generator suspended at its yield: close it explicitly so it
+                # meters the abandoned stream and releases the provider
+                # connection, instead of waiting for garbage collection.
+                try:
+                    await stream.aclose()
+                except asyncio.CancelledError:
+                    pass  # cancellation already unwinding; the generator closes with it
+                except Exception:  # noqa: BLE001 — closing is best effort
+                    logger.debug("stream aclose failed", exc_info=True)
                 await queue.put(("end", None))
 
         producer = asyncio.create_task(_produce())

@@ -153,6 +153,11 @@ class APIKey(Base, TimestampMixin):
         nullable=True,
     )
 
+    # Where the key was minted from (observability/client.py); abuse-detector
+    # signal for "one console session working down a list of accounts".
+    created_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    created_ua_hash: Mapped[str | None] = mapped_column(String(16), nullable=True)
+
     def __repr__(self) -> str:
         return f"<APIKey(id={self.id}, name={self.name}, prefix={self.key_prefix})>"
 

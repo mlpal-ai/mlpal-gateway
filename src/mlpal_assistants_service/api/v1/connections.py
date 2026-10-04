@@ -357,7 +357,7 @@ async def create_endpoint(
     await _publish(cache_invalidator, principal.id)
     logger.info(
         "connection created",
-        extra={"user_id": principal.id, "kind": "byom", "name": body.name, "status": row.status},
+        extra={"user_id": principal.id, "kind": "byom", "connection_name": body.name, "status": row.status},
     )
     return _conn_out(row)
 

@@ -153,11 +153,22 @@ class TranslatingEdge:
             ctx.empty_completion = empty_completion
             ctx.report(CanonicalUsage.from_openai(usage) if usage else None, 200, message_id)
 
+        async def _observe_partial_usage(chunks: Any) -> Any:
+            # Adapters surface the input side on their first provider event
+            # (Anthropic message_start, Gemini usage_metadata). Report it as it
+            # arrives so a stream the client abandons is still metered.
+            async for chunk in chunks:
+                if chunk.usage is not None and not chunk.done and "usage" not in reported:
+                    ctx.report(CanonicalUsage.from_openai(chunk.usage), 200, message_id)
+                yield chunk
+
         emitted = False
         try:
             _, kwargs = self._prepare(req, ctx)
-            chunks = self._adapter.chat_stream(
-                **kwargs, stream_thinking=get_settings().messages_v2_stream_thinking
+            chunks = _observe_partial_usage(
+                self._adapter.chat_stream(
+                    **kwargs, stream_thinking=get_settings().messages_v2_stream_thinking
+                )
             )
             async for sse_bytes in emit.stream_anthropic_sse(chunks, message_id, ctx.model_tag, _on_final):
                 emitted = True

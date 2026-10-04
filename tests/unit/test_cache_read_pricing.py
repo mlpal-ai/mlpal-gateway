@@ -175,12 +175,14 @@ async def test_v1_anthropic_semantics_cached_added():
 
 
 @pytest.mark.asyncio
-async def test_v1_google_provider_multiplier_is_quarter():
+async def test_v1_google_provider_multiplier_is_tenth():
+    # Google lists cached input at 10% of the input rate (rate card 2026-09-30;
+    # it was 25% until then).
     svc = _pricing_service()
     cu = await svc.calculate_compute_units(
         "gemini-3-pro", 1000, 0, cached_units=800, cached_included=True, provider="google"
     )
-    dollars = (Decimal(200) * 10 + Decimal(800) * Decimal("2.5")) / Decimal(1_000_000)
+    dollars = (Decimal(200) * 10 + Decimal(800) * Decimal("1.0")) / Decimal(1_000_000)
     assert cu * 10 == dollars
 
 
@@ -219,7 +221,7 @@ async def test_v1_no_cache_identical_to_before():
 def test_provider_multiplier_map():
     from mlpal_assistants_service.services.pricing import provider_cache_read_multiplier
 
-    assert provider_cache_read_multiplier("google") == Decimal("0.25")
+    assert provider_cache_read_multiplier("google") == Decimal("0.10")
     assert provider_cache_read_multiplier("openai") == Decimal("0.10")
     assert provider_cache_read_multiplier("anthropic") == Decimal("0.10")
     assert provider_cache_read_multiplier(None) == Decimal("0.10")

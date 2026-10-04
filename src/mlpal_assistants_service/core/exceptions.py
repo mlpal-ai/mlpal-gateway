@@ -38,6 +38,17 @@ class InvalidAPIKeyError(AuthenticationError):
         super().__init__(message)
 
 
+class AccountHeldError(AssistantsServiceError):
+    """Signup risk hold (managed deployments): the account exists but may not
+    mint API keys until the hold is released (a verified payment method).
+    Surfaces as 403 with code `risk_hold` so the console shows the same
+    treatment as the backend's HOP key routes."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message, {"code": "risk_hold"})
+        self.status_code = 403
+
+
 class APIKeySuspendedError(AssistantsServiceError):
     """The key (and its account) was suspended by an operator; the message
     tells the holder whom to contact. Surfaces as 403, never as 'invalid key'."""
@@ -122,10 +133,13 @@ class BudgetExceededError(AssistantsServiceError):
         spent: float,
         reset_at: str | None,
         budget_id: str | None = None,
+        label: str = "Spend budget exhausted",
+        hint: str | None = None,
     ) -> None:
         super().__init__(
-            f"Spend budget exhausted: {spent:.4f}/{limit:.4f} {unit} for the "
-            f"{window} window" + (f" (resets {reset_at})" if reset_at else ""),
+            f"{label}: {spent:.4f}/{limit:.4f} {unit} for the "
+            f"{window} window" + (f" (resets {reset_at})" if reset_at else "")
+            + (f". {hint}" if hint else ""),
             {
                 "code": "budget_exceeded",
                 "budget_id": budget_id,
@@ -172,6 +186,16 @@ class ProviderUnavailableError(ProviderError):
     pass
 
 
+class ProviderTimeoutError(ProviderError):
+    """The provider accepted the request but the response never completed
+    within the read timeout. Terminal: never retried and never hopped to
+    another backend — the prompt is already billed upstream and generation
+    may still be running there (adapters/retry.py)."""
+
+    def __init__(self, message: str, provider: str, original_error: str | None = None) -> None:
+        super().__init__(message, provider, status_code=504, original_error=original_error)
+
+
 def http_status_for_provider_error(exc: ProviderError) -> int:
     """Map a ProviderError to the HTTP status the gateway should return.
 
@@ -187,6 +211,8 @@ def http_status_for_provider_error(exc: ProviderError) -> int:
     """
     if isinstance(exc, ProviderUnavailableError):
         return 503
+    if isinstance(exc, ProviderTimeoutError):
+        return 504
     code = exc.status_code
     if code in (400, 422):
         return code

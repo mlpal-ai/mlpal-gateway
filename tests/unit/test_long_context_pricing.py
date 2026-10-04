@@ -83,7 +83,7 @@ async def test_gemini_long_cache_read_defaults_to_provider_multiple():
     row = _astra(model_tag="gemini-2.5-pro", input_rate=Decimal("1.25"), output_rate=Decimal("10"),
                  long_context_threshold=200000, long_input_rate=Decimal("2.5"), long_output_rate=Decimal("15"), long_cache_read_rate=None)
     cu = await _svc(row).calculate_compute_units("gemini-2.5-pro", 250_000, 100, cached_units=50_000, cached_included=True, provider="google")
-    assert cu == (Decimal(200_000) * Decimal("2.5") + Decimal(50_000) * Decimal("2.5") * Decimal("0.25") + Decimal(100) * 15) / M / 10
+    assert cu == (Decimal(200_000) * Decimal("2.5") + Decimal(50_000) * Decimal("2.5") * Decimal("0.10") + Decimal(100) * 15) / M / 10
 
 
 @pytest.mark.asyncio
@@ -107,8 +107,13 @@ def test_catalog_rows_and_sync_fields():
     assert by["gpt-6-luna"]["long_context_threshold"] == 272000 and Decimal(by["gpt-6-luna"]["long_input_rate"]) == Decimal("0.2")
     assert by["gemini-3.1-pro-preview"]["long_context_threshold"] == 200000 and Decimal(by["gemini-3.1-pro-preview"]["cache_read_rate"]) == Decimal("0.2")
     assert by["gemini-2.5-pro"]["long_cache_read_rate"] is None
-    for tag in ("claude-opus-5-5", "claude-sonnet-5", "gpt-5.5"):
+    for tag in ("claude-opus-5-5", "claude-sonnet-5"):
         assert by[tag].get("long_context_threshold") is None  # Anthropic: 1M at standard; no tier
+    # OpenAI long tiers past 272k (rate card 2026-09-30)
+    for tag in ("gpt-5.5", "gpt-5.5-pro", "gpt-5.4"):
+        assert by[tag]["long_context_threshold"] == 272000
+    assert Decimal(by["gpt-5.5"]["long_input_rate"]) == 10 and Decimal(by["gpt-5.5"]["long_cache_read_rate"]) == 1
+    assert by["gpt-5.5-pro"]["long_cache_read_rate"] is None
     for f in ("long_context_threshold", "long_input_rate", "long_output_rate", "long_cache_read_rate"):
         assert f in PRICING_FIELDS
     assert {"long_input_rate", "long_output_rate", "long_cache_read_rate"} <= _NUMERIC

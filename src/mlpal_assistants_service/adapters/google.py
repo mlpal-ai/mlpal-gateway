@@ -8,7 +8,6 @@ from typing import Any
 
 from google import genai
 from google.genai import types
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from mlpal_assistants_service.adapters.base import (
     AdapterResponse,
@@ -30,11 +29,18 @@ from mlpal_assistants_service.adapters.base import (
     UnsupportedModalityError,
     provider_status_code,
 )
+from mlpal_assistants_service.adapters.retry import call_provider, is_timeout, read_timeout_seconds
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
     ProviderError,
+    ProviderTimeoutError,
     ProviderUnavailableError,
     UnsupportedCapabilityError,
+)
+from mlpal_assistants_service.seams.egress_guard import (
+    EndpointRejected,
+    guarded_fetch,
+    guarded_fetch_sync,
 )
 from mlpal_assistants_service.services import gemini_cache
 
@@ -514,11 +520,6 @@ class GoogleAdapter(BaseAdapter):
         config["cached_content"] = name
         return stripped
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
     async def chat(
         self,
         model: str,
@@ -624,13 +625,19 @@ class GoogleAdapter(BaseAdapter):
                 config, model, tools, tool_choice, prefix_cache_ttl
             )
 
+            # Whole-response wait for a non-streaming call (ms, google-genai).
+            config.setdefault("http_options", {"timeout": int(read_timeout_seconds() * 1000)})
+
             # Make API call. If a referenced cache turned out to be gone, drop the
             # stale mapping, restore the inline prefix, and retry once uncached.
             try:
-                response = await self._client.aio.models.generate_content(
-                    model=model,
-                    contents=gemini_contents,
-                    config=types.GenerateContentConfig(**config),
+                response = await call_provider(
+                    lambda: self._client.aio.models.generate_content(
+                        model=model,
+                        contents=gemini_contents,
+                        config=types.GenerateContentConfig(**config),
+                    ),
+                    provider=self.provider_name,
                 )
             except Exception as e:  # noqa: BLE001
                 if not (cached and _is_cache_missing_error(e)):
@@ -640,10 +647,13 @@ class GoogleAdapter(BaseAdapter):
                 )
                 config.pop("cached_content", None)
                 config.update(cached)
-                response = await self._client.aio.models.generate_content(
-                    model=model,
-                    contents=gemini_contents,
-                    config=types.GenerateContentConfig(**config),
+                response = await call_provider(
+                    lambda: self._client.aio.models.generate_content(
+                        model=model,
+                        contents=gemini_contents,
+                        config=types.GenerateContentConfig(**config),
+                    ),
+                    provider=self.provider_name,
                 )
 
             latency_ms = int((time.perf_counter() - start_time) * 1000)
@@ -703,13 +713,20 @@ class GoogleAdapter(BaseAdapter):
                 raw_response={"text": content},
             )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             error_message = str(e)
 
             logger.error(f"Google AI chat error after {latency_ms}ms: {error_message}")
+
+            if is_timeout(e):
+                raise ProviderTimeoutError(
+                    message=f"Google AI request timed out after {latency_ms}ms",
+                    provider=self.provider_name,
+                    original_error=error_message,
+                )
 
             if "quota" in error_message.lower() or "rate" in error_message.lower():
                 raise ProviderUnavailableError(
@@ -864,7 +881,14 @@ class GoogleAdapter(BaseAdapter):
             total_cached_tokens = 0
             pending_tool_calls: list[dict[str, Any]] = []
 
+            usage_surfaced = False
             async for chunk in stream:
+                meta = chunk.usage_metadata
+                if not usage_surfaced and meta and meta.prompt_token_count:
+                    # Input-side usage is final from the first chunk: surface
+                    # it so the service can meter a stream the client abandons.
+                    usage_surfaced = True
+                    yield StreamChunk(content="", done=False, usage=_gemini_token_usage(meta))
                 if chunk.candidates and chunk.candidates[0].content and chunk.candidates[0].content.parts:
                     for part in chunk.candidates[0].content.parts:
                         if hasattr(part, "text") and part.text:
@@ -923,7 +947,7 @@ class GoogleAdapter(BaseAdapter):
                 finish_reason="stop",
             )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             logger.error(f"Google AI streaming error: {e}")
@@ -1125,7 +1149,6 @@ class GoogleAdapter(BaseAdapter):
         """Build a Gemini Part from FileAttachment for binary data (image, audio, video, PDF)."""
         import base64 as b64_module
 
-        import httpx
 
         mime = attachment.mime_type or "application/octet-stream"
 
@@ -1141,15 +1164,15 @@ class GoogleAdapter(BaseAdapter):
             else:
                 # Fetch the file and convert to bytes
                 try:
-                    with httpx.Client(timeout=60.0) as client:
-                        response = client.get(url)
-                        response.raise_for_status()
+                    with guarded_fetch_sync(url, timeout=60.0) as response:
                         data = response.content
                         # Detect mime type from response if not provided
                         if attachment.mime_type is None:
                             content_type = response.headers.get("content-type", mime)
                             mime = content_type.split(";")[0].strip()
                         return types.Part.from_bytes(data=data, mime_type=mime)
+                except EndpointRejected:
+                    raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped file
                 except Exception as e:
                     logger.warning(f"Failed to fetch file from URL: {e}")
                     return None
@@ -1208,11 +1231,8 @@ class GoogleAdapter(BaseAdapter):
                 )
             else:
                 # Fetch the image and convert to bytes
-                import httpx
                 try:
-                    with httpx.Client(timeout=30.0) as client:
-                        response = client.get(url)
-                        response.raise_for_status()
+                    with guarded_fetch_sync(url, timeout=30.0) as response:
                         image_data = response.content
                         # Detect mime type from response or use provided
                         mime_type = image.get("mime_type")
@@ -1223,6 +1243,8 @@ class GoogleAdapter(BaseAdapter):
                             data=image_data,
                             mime_type=mime_type,
                         )
+                except EndpointRejected:
+                    raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped image
                 except Exception as e:
                     logger.warning(f"Failed to fetch image from URL: {e}")
                     return None
@@ -1232,7 +1254,6 @@ class GoogleAdapter(BaseAdapter):
         """Build document part for PDFs from legacy dict format."""
         import base64 as b64_module
 
-        import httpx
 
         mime_type = doc.get("mime_type", "application/pdf")
 
@@ -1245,11 +1266,11 @@ class GoogleAdapter(BaseAdapter):
                 return types.Part.from_uri(file_uri=url, mime_type=mime_type)
             else:
                 try:
-                    with httpx.Client(timeout=60.0) as client:
-                        response = client.get(url)
-                        response.raise_for_status()
+                    with guarded_fetch_sync(url, timeout=60.0) as response:
                         data = response.content
                         return types.Part.from_bytes(data=data, mime_type=mime_type)
+                except EndpointRejected:
+                    raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped document
                 except Exception as e:
                     logger.warning(f"Failed to fetch document from URL: {e}")
                     return None
@@ -1259,7 +1280,6 @@ class GoogleAdapter(BaseAdapter):
         """Build audio part from legacy dict format."""
         import base64 as b64_module
 
-        import httpx
 
         mime_type = audio.get("mime_type", "audio/mpeg")
 
@@ -1272,11 +1292,11 @@ class GoogleAdapter(BaseAdapter):
                 return types.Part.from_uri(file_uri=url, mime_type=mime_type)
             else:
                 try:
-                    with httpx.Client(timeout=60.0) as client:
-                        response = client.get(url)
-                        response.raise_for_status()
+                    with guarded_fetch_sync(url, timeout=60.0) as response:
                         data = response.content
                         return types.Part.from_bytes(data=data, mime_type=mime_type)
+                except EndpointRejected:
+                    raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped audio
                 except Exception as e:
                     logger.warning(f"Failed to fetch audio from URL: {e}")
                     return None
@@ -1286,7 +1306,6 @@ class GoogleAdapter(BaseAdapter):
         """Build video part from legacy dict format."""
         import base64 as b64_module
 
-        import httpx
 
         mime_type = video.get("mime_type", "video/mp4")
 
@@ -1299,11 +1318,11 @@ class GoogleAdapter(BaseAdapter):
                 return types.Part.from_uri(file_uri=url, mime_type=mime_type)
             else:
                 try:
-                    with httpx.Client(timeout=120.0) as client:
-                        response = client.get(url)
-                        response.raise_for_status()
+                    with guarded_fetch_sync(url, timeout=120.0) as response:
                         data = response.content
                         return types.Part.from_bytes(data=data, mime_type=mime_type)
+                except EndpointRejected:
+                    raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped video
                 except Exception as e:
                     logger.warning(f"Failed to fetch video from URL: {e}")
                     return None
@@ -1526,10 +1545,7 @@ class GoogleAdapter(BaseAdapter):
                         with open(ref.data, "rb") as f:
                             img_data = f.read()
                     elif ref.source == FileSource.URL:
-                        import httpx
-                        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                            response = await client.get(ref.data)
-                            response.raise_for_status()
+                        async with guarded_fetch(ref.data, timeout=30.0) as response:
                             img_data = response.content
                     else:
                         continue
@@ -1581,6 +1597,8 @@ class GoogleAdapter(BaseAdapter):
                 prompt=prompt,
             )
 
+        except EndpointRejected:
+            raise  # caller-supplied URL failed the egress policy → 400, not a provider 5xx
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             logger.error(f"Google image generation error after {latency_ms}ms: {e}")
@@ -1624,10 +1642,7 @@ class GoogleAdapter(BaseAdapter):
             elif audio.source == FileSource.BASE64:
                 audio_bytes = base64.b64decode(audio.data)
             elif audio.source == FileSource.URL:
-                import httpx
-                with httpx.Client(timeout=60.0) as client:
-                    response = client.get(audio.data)
-                    response.raise_for_status()
+                async with guarded_fetch(audio.data, timeout=60.0) as response:
                     audio_bytes = response.content
             else:
                 raise ValueError(f"Unsupported audio source: {audio.source}")
@@ -1666,6 +1681,8 @@ class GoogleAdapter(BaseAdapter):
                 language=language,
             )
 
+        except EndpointRejected:
+            raise  # caller-supplied URL failed the egress policy → 400, not a provider 5xx
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             logger.error(f"Google transcription error after {latency_ms}ms: {e}")

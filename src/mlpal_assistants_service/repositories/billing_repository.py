@@ -32,6 +32,13 @@ BILLING_CACHE_TTL = 60  # seconds
 # Sentinel reason for wallet-empty blocks. Surfaces match on THIS constant to
 # map the block to HTTP 402 + the wallet_empty/billing_error wire envelopes.
 WALLET_EMPTY_MESSAGE = "Wallet balance exhausted — top up at https://mlpal.ai/billing"
+WALLET_LOW_INFLIGHT_MESSAGE = (
+    "Wallet nearly empty — wait for your in-flight requests to finish, "
+    "or top up at https://mlpal.ai/billing"
+)
+# A slot left behind by a crashed request frees itself after this long.
+INFLIGHT_SLOT_TTL = 300
+DEGRADED_CACHE_TTL = 15  # seconds a fail-open snapshot/config is reused
 WALLET_CONFIG_CACHE_KEY = "wallet:config"
 
 
@@ -134,14 +141,25 @@ class BillingRepository(BaseRepository[UserBillingStatus]):
 
         headers = _service_auth_headers(self._settings)
 
-        async with httpx.AsyncClient(
-            base_url=self._settings.backend_base_url,
-            timeout=httpx.Timeout(self._settings.wallet_timeout_seconds),
-            headers=headers,
-        ) as client:
-            response = await client.get("/api/v1/internal/config/platform")
-            response.raise_for_status()
-            payload = response.json().get("data", {})
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._settings.backend_base_url,
+                timeout=httpx.Timeout(self._settings.wallet_timeout_seconds),
+                headers=headers,
+            ) as client:
+                response = await client.get("/api/v1/internal/config/platform")
+                response.raise_for_status()
+                payload = response.json().get("data", {})
+        except Exception as e:  # noqa: BLE001 — classified by the fail-open policy
+            if not self._settings.wallet_fail_open:
+                raise
+            # No cached config and the backend is unreachable: serving without
+            # the wallet gate for DEGRADED_CACHE_TTL beats failing every
+            # request (per-key budgets still apply). Loud on purpose.
+            self._note_degraded("platform_config", e)
+            config = {"wallet_gating_enabled": False, "degraded": True}
+            await self._cache_setex(WALLET_CONFIG_CACHE_KEY, DEGRADED_CACHE_TTL, json.dumps(config))
+            return config
 
         config = {"wallet_gating_enabled": bool(payload.get("walletGatingEnabled", False))}
         await self._cache_setex(
@@ -165,22 +183,29 @@ class BillingRepository(BaseRepository[UserBillingStatus]):
         if cached:
             return json.loads(cached)
 
-        headers = _service_auth_headers(self._settings)
-
-        async with httpx.AsyncClient(
-            base_url=self._settings.payments_base_url,
-            timeout=httpx.Timeout(self._settings.wallet_timeout_seconds),
-            headers=headers,
-        ) as client:
-            response = await client.get(f"/api/v1/internal/wallet/balance/{user_id}")
-            response.raise_for_status()
-            payload = response.json().get("data", {})
-
-        balance = Decimal(str(payload.get("balance", "0")))
+        try:
+            balance = await self._fetch_wallet_balance(user_id)
+        except Exception as e:  # noqa: BLE001 — classified by the fail-open policy
+            if not self._settings.wallet_fail_open:
+                raise
+            self._note_degraded("wallet_balance", e, user_id=user_id)
+            snapshot = {
+                "wallet_gating_enabled": True,
+                "wallet_access_status": "compatibility",  # balance unknown: not gated
+                "wallet_balance_cu": "0",
+                "degraded": True,
+            }
+            await self._cache_setex(cache_key, DEGRADED_CACHE_TTL, json.dumps(snapshot))
+            return snapshot
         snapshot = {
             "wallet_gating_enabled": True,
             "wallet_access_status": ("allowed" if balance > 0 else "insufficient_balance"),
             "wallet_balance_cu": str(balance),
+            # Billed-CU counter at snapshot time: the gate subtracts what this
+            # gateway records after this point, so spend between settlements
+            # (backend debit worker, 60 s) and cache refreshes can't run past
+            # the balance the way the 2026-09-28 farm accounts did.
+            "spent_baseline": str(await self._spent_total(user_id)),
         }
         # Low-balance hardening (gating design 2026-08-12): near-empty wallets
         # get a short snapshot TTL so the stale-allow window shrinks exactly
@@ -191,6 +216,90 @@ class BillingRepository(BaseRepository[UserBillingStatus]):
             ttl = min(ttl, self._settings.wallet_low_balance_cache_ttl_seconds)
         await self._cache_setex(cache_key, ttl, json.dumps(snapshot))
         return snapshot
+
+    def _note_degraded(self, what: str, exc: Exception, user_id: int | None = None) -> None:
+        logger.error(
+            "wallet gate degraded (fail-open): %s unreachable user_id=%s error=%s",
+            what, user_id, f"{type(exc).__name__}: {exc}",
+        )
+        try:
+            from mlpal_assistants_service.core.metrics import get_metrics
+
+            get_metrics().put_metric_sync("WalletGateDegraded", 1, dimensions={"source": what})
+        except Exception:  # noqa: BLE001 — metrics never break a request
+            logger.debug("WalletGateDegraded metric emit failed", exc_info=True)
+
+    async def reserve_inflight(self, user_id: int) -> tuple[str | None, str | None]:
+        """Hold an in-flight slot while the effective balance is low.
+
+        Returns (slot, None) when a slot was taken, (None, None) when no cap
+        applies (gating off, balance comfortable, no Redis), and
+        (None, reason) when the user already has `cap` requests in flight."""
+        if not self._redis:
+            return None, None
+        snapshot = await self._get_wallet_gate_snapshot(user_id)
+        if not snapshot.get("wallet_gating_enabled") or snapshot.get("wallet_access_status") != "allowed":
+            return None, None
+        effective = await self.effective_balance_cu(user_id, snapshot)
+        if effective >= self._settings.wallet_low_balance_inflight_threshold_cu:
+            return None, None
+        key = f"wallet:inflight:{user_id}"
+        try:
+            count = await self._redis.incr(key)
+            await self._redis.expire(key, INFLIGHT_SLOT_TTL)
+            if count > self._settings.wallet_low_balance_inflight_cap:
+                await self._redis.decr(key)
+                logger.warning(
+                    "inflight cap hit user_id=%s effective_cu=%s in_flight=%s",
+                    user_id, effective, count - 1,
+                )
+                return None, WALLET_LOW_INFLIGHT_MESSAGE
+        except RedisError as e:
+            logger.warning("billing_cache_degraded: inflight failed", extra={"error": str(e)})
+            return None, None
+        return key, None
+
+    async def release_inflight(self, slot: str | None) -> None:
+        if slot is None or not self._redis:
+            return
+        try:
+            if await self._redis.decr(slot) < 0:  # a slot that outlived its TTL
+                await self._redis.delete(slot)
+        except RedisError as e:
+            logger.warning("billing_cache_degraded: inflight release failed", extra={"error": str(e)})
+
+    async def _fetch_wallet_balance(self, user_id: int) -> Decimal:
+        headers = _service_auth_headers(self._settings)
+        async with httpx.AsyncClient(
+            base_url=self._settings.payments_base_url,
+            timeout=httpx.Timeout(self._settings.wallet_timeout_seconds),
+            headers=headers,
+        ) as client:
+            response = await client.get(f"/api/v1/internal/wallet/balance/{user_id}")
+            response.raise_for_status()
+            payload = response.json().get("data", {})
+        return Decimal(str(payload.get("balance", "0")))
+
+    async def _spent_total(self, user_id: int) -> Decimal:
+        """The running billed-CU counter (services/usage.wallet_spent_key); 0
+        when Redis is absent or degraded — the gate then falls back to the
+        snapshot balance alone, as before."""
+        from mlpal_assistants_service.services.usage import wallet_spent_key
+
+        raw = await self._cache_get(wallet_spent_key(user_id))
+        try:
+            return Decimal(str(raw)) if raw is not None else Decimal("0")
+        except (ArithmeticError, ValueError):
+            return Decimal("0")
+
+    async def effective_balance_cu(self, user_id: int, snapshot: dict) -> Decimal:
+        """Snapshot balance minus the CU this gateway has billed since the
+        snapshot was taken. A counter that restarted (expiry, Redis flush)
+        reads below the baseline and counts as zero spend, never negative."""
+        balance = Decimal(str(snapshot.get("wallet_balance_cu", "0")))
+        baseline = Decimal(str(snapshot.get("spent_baseline", "0")))
+        spent = await self._spent_total(user_id) - baseline
+        return balance - max(spent, Decimal("0"))
 
     async def wallet_paused(self, user_id: int) -> bool:
         """True when wallet gating is on and this user's balance is exhausted.
@@ -215,6 +324,8 @@ class BillingRepository(BaseRepository[UserBillingStatus]):
         wallet_gate = await self._get_wallet_gate_snapshot(user_id)
         if wallet_gate.get("wallet_gating_enabled", False):
             if wallet_gate.get("wallet_access_status") == "allowed":
+                if await self.effective_balance_cu(user_id, wallet_gate) <= 0:
+                    return False, WALLET_EMPTY_MESSAGE, True
                 return True, None, True
             if wallet_gate.get("wallet_access_status") == "insufficient_balance":
                 return False, WALLET_EMPTY_MESSAGE, True

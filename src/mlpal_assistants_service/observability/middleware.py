@@ -23,6 +23,7 @@ import time
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mlpal_assistants_service.core.metrics import get_metrics
+from mlpal_assistants_service.observability.client import bind_client_context
 
 _MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"]{1,128})"')
 _SKIP_PATHS = ("/", "/docs", "/redoc", "/openapi.json")
@@ -57,6 +58,7 @@ class ObservabilityMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        bind_client_context(scope)
         path = scope["path"]
         method = scope["method"]
         if method == "OPTIONS" or path.startswith("/health") or path in _SKIP_PATHS:

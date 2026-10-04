@@ -40,6 +40,7 @@ class UsageLog(Base):
         Index("idx_usage_model", "model_tag", "created_at"),
         Index("idx_usage_trace", "trace_id"),
         Index("idx_usage_wallet_debit_status", "wallet_debit_status", "created_at"),
+        Index("idx_usage_client_ip", "client_ip", "created_at"),
         {"schema": "assistants"},
     )
 
@@ -166,6 +167,11 @@ class UsageLog(Base):
         JSONB,
         nullable=True,
     )
+
+    # Client signals for the abuse detector (observability/client.py). The IP
+    # is scrubbed after retention; the UA hash is a 16-hex sha256 prefix.
+    client_ip: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    client_ua_hash: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     # Relationship to API key
     api_key = relationship("APIKey", backref="usage_logs")

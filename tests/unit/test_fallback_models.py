@@ -34,7 +34,10 @@ def test_retriable_classification():
     assert r(ProviderError("boom", provider="openai", status_code=502))
     assert r(ProviderError("rl", provider="openai", status_code=429))
     assert r(ModelNotFoundError("user/nope"))
-    assert r(TimeoutError())
+    # A timeout is terminal since 2026-10-01: the prompt is billed and still
+    # generating upstream, so a fallback model would bill it twice.
+    assert not r(TimeoutError())
+    assert r(ConnectionError())
     assert r(type("APIConnectionError", (Exception,), {})())
     assert not r(ProviderError("bad req", provider="openai", status_code=400))
     assert not r(WalletEmptyError("empty"))

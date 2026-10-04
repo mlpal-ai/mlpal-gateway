@@ -99,6 +99,24 @@ class UsageRepository(BaseRepository[UsageLog]):
         first_of_month = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         return await self.get_user_cu_total(user_id, start_date=first_of_month)
 
+    async def get_user_cu_in_window(
+        self,
+        user_id: int,
+        start: datetime | None,
+        end: datetime | None,
+    ) -> Decimal:
+        """Sum of successful compute units for an ACCOUNT in [start, end) —
+        the reconcile source for the young-account daily ceiling."""
+        stmt = select(func.coalesce(func.sum(UsageLog.compute_units), 0)).where(
+            UsageLog.user_id == user_id,
+            UsageLog.status == "success",
+        )
+        if start is not None:
+            stmt = stmt.where(UsageLog.created_at >= start)
+        if end is not None:
+            stmt = stmt.where(UsageLog.created_at < end)
+        return Decimal(str((await self.session.execute(stmt)).scalar_one()))
+
     async def get_api_key_cu_in_window(
         self,
         api_key_id: int,

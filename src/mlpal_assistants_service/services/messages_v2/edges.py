@@ -60,6 +60,9 @@ class RequestContext:
     # Registry `capabilities` of the served model (effort_levels etc.).
     capabilities: Any = None
     cc_metadata: dict[str, Any] = field(default_factory=dict)
+    # Low-balance in-flight slot from the billing gate; released when the
+    # response completes (streams: in the body generator's finally).
+    inflight_slot: str | None = None
 
     def report(
         self,

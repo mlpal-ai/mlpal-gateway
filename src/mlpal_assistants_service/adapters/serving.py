@@ -260,6 +260,7 @@ class BedrockAnthropicAdapter(AnthropicAdapter):
         super().__init__(
             api_key="unused-sigv4",
             client=AsyncAnthropicBedrock(
+                max_retries=0,  # adapters/retry.py is the only retry layer
                 aws_region=settings.bedrock_mantle_region,
                 http_client=httpx.AsyncClient(
                     limits=httpx.Limits(max_connections=300, max_keepalive_connections=60),
@@ -298,6 +299,7 @@ class VertexAnthropicAdapter(AnthropicAdapter):
         super().__init__(
             api_key="unused-adc",
             client=AsyncAnthropicVertex(
+                max_retries=0,  # adapters/retry.py is the only retry layer
                 project_id=settings.vertex_project,
                 region=settings.vertex_location,
                 http_client=httpx.AsyncClient(
@@ -339,6 +341,7 @@ class AzureAnthropicAdapter(AnthropicAdapter):
         super().__init__(
             api_key=settings.azure_openai_api_key,
             client=AsyncAnthropic(
+                max_retries=0,  # adapters/retry.py is the only retry layer
                 api_key=settings.azure_openai_api_key,
                 base_url=settings.azure_openai_endpoint.rstrip("/") + "/anthropic",
                 http_client=httpx.AsyncClient(

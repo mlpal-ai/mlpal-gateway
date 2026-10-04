@@ -78,3 +78,32 @@ async def suspension_status(
     user_id: int, principal: SuspensionPrincipal, api_key_service: APIKeyServiceDep
 ) -> SuspensionResponse:
     return _resp(user_id, await api_key_service.active_suspension(user_id))
+
+
+class AbuseEventResponse(BaseModel):
+    id: int
+    created_at: str
+    rule: str
+    cluster_key: str
+    action: str
+    evidence: dict
+
+
+@router.get("/abuse/events", response_model=list[AbuseEventResponse], summary="Recent abuse-detector findings")
+async def abuse_events(
+    principal: SuspensionPrincipal, api_key_service: APIKeyServiceDep, limit: int = 50
+) -> list[AbuseEventResponse]:
+    from sqlalchemy import select
+
+    from mlpal_assistants_service.db.models import AbuseEvent
+
+    rows = await api_key_service.session.execute(
+        select(AbuseEvent).order_by(AbuseEvent.created_at.desc()).limit(max(1, min(limit, 500)))
+    )
+    return [
+        AbuseEventResponse(
+            id=e.id, created_at=e.created_at.isoformat(), rule=e.rule,
+            cluster_key=e.cluster_key, action=e.action, evidence=e.evidence,
+        )
+        for e in rows.scalars().all()
+    ]

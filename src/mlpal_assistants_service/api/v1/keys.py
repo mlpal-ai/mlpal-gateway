@@ -26,7 +26,7 @@ from mlpal_assistants_service.api.deps import (
     ServicePrincipal,
     UsageServiceDep,
 )
-from mlpal_assistants_service.core.exceptions import ValidationError
+from mlpal_assistants_service.core.exceptions import AccountHeldError, ValidationError
 from mlpal_assistants_service.core.security import CDE_API_KEY_PREFIX
 from mlpal_assistants_service.schemas.api_key import (
     APIKeyCreate,
@@ -37,8 +37,22 @@ from mlpal_assistants_service.schemas.api_key import (
     KeyUsageSummary,
 )
 from mlpal_assistants_service.schemas.usage import DailyUsageResponse
+from mlpal_assistants_service.services.api_key import HOLD_MESSAGE as _HOLD_MESSAGE
+from mlpal_assistants_service.services.api_key import APIKeyService
 
 router = APIRouter()
+
+# Byte-identical to the backend's HOP key-route sentence (defined next to the
+# hold lookup; re-exported here for the key routes and their tests).
+HOLD_MESSAGE = _HOLD_MESSAGE
+
+
+async def _refuse_if_held(api_key_service: APIKeyService, owner_id: int) -> None:
+    """Signup-risk hold (managed): the backend's scorer parks risky signups
+    until a card is verified; minting a gateway key must not be the bypass."""
+    if await api_key_service.hold_reason(owner_id):
+        raise AccountHeldError(HOLD_MESSAGE)
+
 audit = structlog.get_logger("audit.keys")
 
 
@@ -115,6 +129,7 @@ async def create_api_key(
                 detail="Only a service identity may act as another user",
             )
         owner_id = current_user.id
+    await _refuse_if_held(api_key_service, owner_id)
     api_key, secret = await api_key_service.create_key(
         user_id=owner_id,
         data=body,
@@ -411,6 +426,7 @@ async def create_cde_api_key(
     # matter what the caller asks for.
     body.permissions = list(_CDE_KEY_PERMISSIONS)
 
+    await _refuse_if_held(api_key_service, current_user.id)
     api_key, secret = await api_key_service.create_key(
         user_id=current_user.id,
         data=body,

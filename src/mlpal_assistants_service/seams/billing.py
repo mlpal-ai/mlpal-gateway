@@ -65,6 +65,15 @@ class BillingGate(Protocol):
         """Debit the user's wallet for a completed request (managed only)."""
         ...
 
+    async def reserve_inflight(self, user_id: int) -> tuple[str | None, str | None]:
+        """(slot, block_reason). A slot is held while the request is in flight
+        when the user's balance is low; block_reason set = refuse (402)."""
+        ...
+
+    async def release_inflight(self, slot: str | None) -> None:
+        """Give back a slot from reserve_inflight (no-op for None)."""
+        ...
+
 
 class LocalBillingGate:
     """OSS default: self-hosted, no wallet. Allows every request and never calls
@@ -87,6 +96,12 @@ class LocalBillingGate:
         self, user_id: int, compute_units: Decimal, usage_ref: str
     ) -> bool:
         return True
+
+    async def reserve_inflight(self, user_id: int) -> tuple[str | None, str | None]:
+        return None, None
+
+    async def release_inflight(self, slot: str | None) -> None:
+        return None
 
 
 def build_billing_gate(session: Any, redis: Any, settings: Any = None) -> BillingGate:

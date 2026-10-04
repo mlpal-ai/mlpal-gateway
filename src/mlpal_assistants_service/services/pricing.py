@@ -28,7 +28,10 @@ logger = logging.getLogger(__name__)
 # (implicit and explicit, excluding explicit-cache storage fees) at 25% of the
 # input rate; OpenAI and Anthropic at 10%. Per-model exceptions live in
 # ModelPricing.cache_read_rate (e.g. claude-fable-5-1 at $0.25/MTok).
-_PROVIDER_CACHE_READ_MULTIPLIER = {"google": Decimal("0.25")}
+# Every provider now lists cache reads at the standard multiple (Google moved
+# from 25% to 10% — vendor rate card read 2026-09-30); per-model deviations
+# live in model_pricing.cache_read_rate.
+_PROVIDER_CACHE_READ_MULTIPLIER: dict[str, Decimal] = {}
 
 
 def long_tier_applies(pricing: Any, prompt_units: int | Decimal) -> bool:

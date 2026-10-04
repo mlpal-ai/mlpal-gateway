@@ -14,7 +14,6 @@ from typing import Any
 
 import httpx
 from openai import AsyncOpenAI
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from mlpal_assistants_service.adapters.base import (
     AdapterResponse,
@@ -36,12 +35,15 @@ from mlpal_assistants_service.adapters.base import (
     UnsupportedModalityError,
     provider_status_code,
 )
+from mlpal_assistants_service.adapters.retry import call_provider, is_timeout, read_timeout_seconds
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
     ProviderError,
+    ProviderTimeoutError,
     ProviderUnavailableError,
     UnsupportedCapabilityError,
 )
+from mlpal_assistants_service.seams.egress_guard import EndpointRejected, guarded_fetch
 
 logger = logging.getLogger(__name__)
 
@@ -451,6 +453,7 @@ class OpenAIAdapter(BaseAdapter):
             api_key=self._api_key,
             base_url=base_url,
             http_client=http_client,
+            max_retries=0,  # adapters/retry.py is the only retry layer
         )
 
     # =========================================================================
@@ -567,11 +570,6 @@ class OpenAIAdapter(BaseAdapter):
     # Chat Completion
     # =========================================================================
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
     async def chat(
         self,
         model: str,
@@ -662,8 +660,12 @@ class OpenAIAdapter(BaseAdapter):
             if reasoning_effort:
                 params["reasoning"] = {**params.get("reasoning", {}), "effort": reasoning_effort}
 
-            # Make API call via Responses API
-            response = await self._client.responses.create(**params)
+            response = await call_provider(
+                lambda: self._client.responses.create(
+                    **params, timeout=read_timeout_seconds()
+                ),
+                provider=self.provider_name,
+            )
 
             latency_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -712,13 +714,20 @@ class OpenAIAdapter(BaseAdapter):
                 raw_response=response.model_dump(),
             )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             error_message = str(e)
 
             logger.error(f"OpenAI chat error after {latency_ms}ms: {error_message}")
+
+            if is_timeout(e):
+                raise ProviderTimeoutError(
+                    message=f"OpenAI request timed out after {latency_ms}ms",
+                    provider=self.provider_name,
+                    original_error=error_message,
+                )
 
             if "rate_limit" in error_message.lower():
                 raise ProviderUnavailableError(
@@ -902,7 +911,7 @@ class OpenAIAdapter(BaseAdapter):
                         finish_reason=finish_reason,
                     )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             logger.error(f"OpenAI streaming error: {e}")
@@ -990,7 +999,12 @@ class OpenAIAdapter(BaseAdapter):
         params = dict(params)
         for _ in range(3):
             try:
-                return await self._client.chat.completions.create(**params)
+                return await call_provider(
+                    lambda: self._client.chat.completions.create(
+                        **params, timeout=read_timeout_seconds()
+                    ),
+                    provider=self.provider_name,
+                )
             except Exception as e:  # noqa: BLE001 — classified below, else re-raised
                 msg = str(e)
                 offender = getattr(getattr(e, "body", None), "get", lambda *_: None)("param") \
@@ -1007,7 +1021,12 @@ class OpenAIAdapter(BaseAdapter):
                     params.pop(offender)
                     continue
                 raise
-        return await self._client.chat.completions.create(**params)
+        return await call_provider(
+            lambda: self._client.chat.completions.create(
+                **params, timeout=read_timeout_seconds()
+            ),
+            provider=self.provider_name,
+        )
 
     async def _chat_via_completions(
         self, *, model, messages, temperature, max_tokens, top_p, stop, tools,
@@ -1815,7 +1834,6 @@ class OpenAIAdapter(BaseAdapter):
         """
         import base64
 
-        import httpx
 
         start_time = time.perf_counter()
 
@@ -1844,9 +1862,7 @@ class OpenAIAdapter(BaseAdapter):
                     with open(ref.data, "rb") as f:
                         img_bytes = f.read()
                 elif ref.source == FileSource.URL:
-                    async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
-                        response = await client.get(ref.data)
-                        response.raise_for_status()
+                    async with guarded_fetch(ref.data, timeout=30.0) as response:
                         img_bytes = response.content
                         # Try to get MIME type from response headers
                         content_type = response.headers.get("content-type", "").split(";")[0]
@@ -1923,6 +1939,8 @@ class OpenAIAdapter(BaseAdapter):
                 usage=_image_usage(getattr(response, "usage", None)),
             )
 
+        except EndpointRejected:
+            raise  # caller-supplied URL failed the egress policy → 400, not a provider 5xx
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             logger.error(f"OpenAI image generation with references error: {e}")

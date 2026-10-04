@@ -15,9 +15,9 @@ class _FakeRedis:
         self.deleted: list[str] = []
         self.store = {"wallet:7": "x"}
 
-    async def delete(self, key):
-        self.deleted.append(key)
-        return 1 if self.store.pop(key, None) is not None else 0
+    async def delete(self, *keys):
+        self.deleted.extend(keys)
+        return sum(1 for k in keys if self.store.pop(k, None) is not None)
 
 
 @pytest.fixture
@@ -63,7 +63,8 @@ async def test_msi_bearer_deletes_snapshot(app, monkeypatch):
     r = await _post(app, {"Authorization": "Bearer mlpal_svc_right"})
     assert r.status_code == 200
     assert r.json() == {"invalidated": True, "existed": True}
-    assert app.state.redis.deleted == ["wallet:7"]
+    # one call clears the wallet snapshot, the hold flag and the trust profile
+    assert app.state.redis.deleted == ["wallet:7", "hold:7", "trust:7"]
 
 
 @pytest.mark.asyncio

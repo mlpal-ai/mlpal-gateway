@@ -99,10 +99,14 @@ class PolicyService:
     and fall back to the usage repo.
     """
 
-    def __init__(self, redis: Any, usage_repo: Any, *, settings: Any = None) -> None:
+    def __init__(
+        self, redis: Any, usage_repo: Any, *, settings: Any = None, trust: Any = None
+    ) -> None:
         self._redis = redis
         self._usage_repo = usage_repo
         self._settings = settings or get_settings()
+        # services/account_trust.AccountTrustService (None = no account ceilings)
+        self._trust = trust
 
     # ----- model access (pure, no I/O) -------------------------------------
 
@@ -183,8 +187,10 @@ class PolicyService:
     def _now_local(self) -> datetime:
         return datetime.now(ZoneInfo(self._settings.budget_timezone))
 
-    def _counter_key(self, api_key_id: int, window: str, wid: str) -> str:
-        return f"{_COUNTER_PREFIX}{api_key_id}:{window}:{wid}"
+    def _counter_key(self, subject: int | str, window: str, wid: str) -> str:
+        # Keys are the bare id (existing live counters keep working); accounts
+        # are "user:<id>" (young-account daily ceiling).
+        return f"{_COUNTER_PREFIX}{subject}:{window}:{wid}"
 
     def _ttl_seconds(self, window: str, now_local: datetime) -> int | None:
         if window == "lifetime":
@@ -195,26 +201,26 @@ class PolicyService:
         secs = int((end_utc - datetime.now(UTC)).total_seconds()) + _TTL_GRACE
         return max(secs, _TTL_GRACE)
 
-    async def _window_spend_cu(self, api_key_id: int, window: str, now_local: datetime) -> Decimal:
+    async def _window_spend_cu(
+        self, subject: int | str, window: str, now_local: datetime, reconcile: Any
+    ) -> Decimal:
         """Current-window spend in CU. Redis counter, re-seeded from the DB window
-        sum on miss. Fails OPEN (0) if both stores are unreachable."""
+        sum (`reconcile(start, end)`) on miss. Fails OPEN (0) if both stores are
+        unreachable."""
         wid = window_id(window, now_local)
-        ckey = self._counter_key(api_key_id, window, wid)
+        ckey = self._counter_key(subject, window, wid)
         try:
             cached = await self._redis.get(ckey)
             if cached is not None:
                 return Decimal(cached.decode() if isinstance(cached, bytes) else cached)
         except Exception:  # noqa: BLE001 — Redis down: fall through to DB
             logger.warning("policy: budget counter read failed for %s", ckey, exc_info=True)
-
         start_utc, end_utc = window_bounds(window, now_local)
         try:
-            spent = await self._usage_repo.get_api_key_cu_in_window(api_key_id, start_utc, end_utc)
-            spent = Decimal(spent or 0)
+            spent = Decimal((await reconcile(start_utc, end_utc)) or 0)
         except Exception:  # noqa: BLE001 — DB also down: fail open, don't block traffic
-            logger.warning("policy: budget DB reconcile failed for key %s", api_key_id, exc_info=True)
+            logger.warning("policy: budget DB reconcile failed for %s", subject, exc_info=True)
             return Decimal(0)
-
         # Seed the counter so subsequent requests are Redis-only for this window.
         try:
             ttl = self._ttl_seconds(window, now_local)
@@ -226,11 +232,15 @@ class PolicyService:
             logger.debug("policy: budget counter seed failed for %s", ckey, exc_info=True)
         return spent
 
-    async def check_budgets(self, api_key_id: int, budgets: list[dict] | None) -> None:
-        """Raise BudgetExceededError if ANY of the key's budget windows is at/over
-        its cap. Denies when spent >= limit (bounded single-request overage)."""
-        if not budgets:
-            return
+    async def _check_rules(
+        self,
+        subject: int | str,
+        budgets: list[dict],
+        reconcile: Any,
+        *,
+        label: str = "Spend budget exhausted",
+        hint: str | None = None,
+    ) -> None:
         now_local = self._now_local()
         # Hot path: read every window counter in ONE pipeline round trip; the
         # per-window reseed path (_window_spend_cu) runs only on a cache miss.
@@ -239,19 +249,19 @@ class PolicyService:
         try:
             pipe = self._redis.pipeline(transaction=False)
             for window in windows:
-                pipe.get(self._counter_key(api_key_id, window, window_id(window, now_local)))
+                pipe.get(self._counter_key(subject, window, window_id(window, now_local)))
             for window, raw in zip(windows, await pipe.execute(), strict=True):
                 if raw is not None:
                     spend[window] = Decimal(raw.decode() if isinstance(raw, bytes) else raw)
         except Exception:  # noqa: BLE001 — Redis down: reseed path handles it
-            logger.warning("policy: batched budget read failed for key %s", api_key_id, exc_info=True)
+            logger.warning("policy: batched budget read failed for %s", subject, exc_info=True)
         for b in budgets:
             window, unit = b["window"], b["unit"]
             amount = Decimal(str(b["amount"]))
             limit_cu = self._to_cu(amount, unit)
             spent_cu = spend.get(window)
             if spent_cu is None:
-                spent_cu = await self._window_spend_cu(api_key_id, window, now_local)
+                spent_cu = await self._window_spend_cu(subject, window, now_local, reconcile)
                 spend[window] = spent_cu
             if spent_cu >= limit_cu:
                 _, end_utc = window_bounds(window, now_local)
@@ -262,18 +272,66 @@ class PolicyService:
                     spent=float(round(self._from_cu(spent_cu, unit), 6)),
                     reset_at=end_utc.isoformat() if end_utc else None,
                     budget_id=b.get("id"),
+                    label=label,
+                    hint=hint,
                 )
 
-    async def record_key_usage(
-        self, api_key_id: int, budgets: list[dict] | None, cu: Decimal | float
+    async def check_budgets(
+        self, api_key_id: int, budgets: list[dict] | None, user_id: int | str | None = None
     ) -> None:
-        """Accrue `cu` onto every window this key budgets on. Best-effort,
-        pipelined; fails open (spend still lands in usage_logs and re-seeds)."""
+        """Raise BudgetExceededError if ANY of the key's budget windows is at/over
+        its cap (deny when spent >= limit: bounded single-request overage), or,
+        when `user_id` is given and the account is still ramping, if the
+        account's daily ceiling is reached (services/account_trust.py)."""
+        if budgets:
+            await self._check_rules(
+                api_key_id,
+                budgets,
+                lambda s, e: self._usage_repo.get_api_key_cu_in_window(api_key_id, s, e),
+            )
+        if user_id is not None and self._trust is not None:
+            ceiling = await self._trust.daily_ceiling_cu(user_id)
+            if ceiling is not None:
+                await self._check_rules(
+                    f"user:{user_id}",
+                    [self._account_rule(ceiling)],
+                    lambda s, e: self._usage_repo.get_user_cu_in_window(int(user_id), s, e),
+                    label="New-account daily limit reached",
+                    hint="Add a payment method in Billing to lift it.",
+                )
+
+    @staticmethod
+    def _account_rule(ceiling_cu: Decimal) -> dict:
+        return {"id": "young-account-daily", "unit": "cu", "amount": str(ceiling_cu), "window": "daily"}
+
+    async def record_key_usage(
+        self,
+        api_key_id: int,
+        budgets: list[dict] | None,
+        cu: Decimal | float,
+        user_id: int | str | None = None,
+    ) -> None:
+        """Accrue `cu` onto every window this key budgets on, and onto the
+        account's daily counter when a ramp applies. Best-effort, pipelined;
+        fails open (spend still lands in usage_logs and re-seeds)."""
         cu = Decimal(str(cu))
-        if not budgets or cu <= 0:
+        if cu <= 0:
+            return
+        targets: list[tuple[int | str, str]] = [(api_key_id, b["window"]) for b in (budgets or [])]
+        if user_id is not None and self._trust is not None and self._trust.enabled:
+            targets.append((f"user:{user_id}", "daily"))
+            if await self._trust.daily_ceiling_cu(user_id) is not None:
+                # Spend by accounts still on the ramp — the "new accounts are
+                # burning credit" alarm (incident 2026-09-28 shape).
+                try:
+                    from mlpal_assistants_service.core.metrics import get_metrics
+
+                    get_metrics().put_metric_sync("YoungAccountComputeUnits", float(cu), "None")
+                except Exception:  # noqa: BLE001 — metrics never break accrual
+                    logger.debug("YoungAccountComputeUnits emit failed", exc_info=True)
+        if not targets:
             return
         now_local = self._now_local()
-        windows = {b["window"] for b in budgets}
         try:
             # Increment ONLY when the counter exists. incrbyfloat would CREATE
             # a missing counter at just this request's cu — after a Redis
@@ -287,9 +345,9 @@ class PolicyService:
                 "else return false end"
             )
             pipe = self._redis.pipeline(transaction=False)
-            for window in windows:
+            for subject, window in dict.fromkeys(targets):
                 wid = window_id(window, now_local)
-                ckey = self._counter_key(api_key_id, window, wid)
+                ckey = self._counter_key(subject, window, wid)
                 pipe.eval(lua, 1, ckey, float(cu))
                 ttl = self._ttl_seconds(window, now_local)
                 if ttl is not None:

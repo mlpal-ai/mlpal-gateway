@@ -40,6 +40,7 @@ from mlpal_assistants_service.core.exceptions import (
     ModelNotAvailableError,
     ModelNotFoundError,
     ProviderError,
+    ProviderTimeoutError,
     QuotaExceededError,
     UnsupportedCapabilityError,
     WalletEmptyError,
@@ -56,6 +57,7 @@ from mlpal_assistants_service.schemas.chat import (
     ToolCallSchema,
 )
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
+from mlpal_assistants_service.services.account_trust import AccountTrustService
 from mlpal_assistants_service.services.capture import (
     capture_payload,
     capture_state,
@@ -76,6 +78,15 @@ from mlpal_assistants_service.services.router import ModelRouter
 from mlpal_assistants_service.services.usage import UsageService
 
 logger = logging.getLogger(__name__)
+
+
+def _report_background_failure(task: asyncio.Task) -> None:
+    if task.cancelled():
+        logger.error("background task cancelled before completion: %s", task.get_name())
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error("background task failed: %s", task.get_name(), exc_info=exc)
 
 
 @dataclass
@@ -172,7 +183,9 @@ class ChatService:
         self._rate_limiter = RateLimiter(redis_client) if redis_client else None
         # Per-key policy engine. Pre-check reconciles budget spend from the
         # request session's usage repo; accrual (post-request) is Redis-only.
-        self._policy = PolicyService(redis_client, UsageRepository(session))
+        self._policy = PolicyService(
+            redis_client, UsageRepository(session), trust=AccountTrustService(session, redis_client)
+        )
 
         # Inject shared caches for hot-path optimization (avoids per-request DB hits)
         if shared_caches:
@@ -187,10 +200,15 @@ class ChatService:
         self._background_tasks: set[asyncio.Task] = set()
 
     def _fire_and_forget(self, coro: Any) -> None:
-        """Schedule a coroutine as a fire-and-forget background task."""
+        """Schedule a coroutine as a fire-and-forget background task.
+
+        A failure here is a lost usage row or a missed debit, so it is logged
+        at ERROR the moment the task finishes — never left to asyncio's
+        "exception was never retrieved" at garbage-collection time."""
         task = asyncio.create_task(coro)
         self._background_tasks.add(task)
         task.add_done_callback(self._background_tasks.discard)
+        task.add_done_callback(_report_background_failure)
 
     async def _post_request_background(
         self,
@@ -212,6 +230,7 @@ class ChatService:
         conn_kind: str | None = None,
         byom_usd: Decimal | None = None,
         backend_fallback_from: str | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> None:
         """Background task for post-provider steps.
 
@@ -224,9 +243,18 @@ class ChatService:
                 bg_billing = build_billing_gate(bg_session, self.redis)
                 bg_usage = UsageService(bg_session, self.redis, sqs_client)
 
-                # Ensure billing status if needed (new user)
+                # Billing-status upkeep is best effort and runs in a savepoint
+                # AFTER nothing else depends on it: a failure here (FK, race
+                # with another first request) must never cost the usage row.
                 if billing_needs_ensure:
-                    await bg_billing.ensure_billing_status(user_id)
+                    try:
+                        async with bg_session.begin_nested():
+                            await bg_billing.ensure_billing_status(user_id)
+                    except Exception:  # noqa: BLE001 — logged, row still written
+                        logger.error(
+                            "ensure_billing_status failed user_id=%s trace=%s",
+                            user_id, trace_id, exc_info=True,
+                        )
 
                 # Record usage (SQS or DB)
                 await bg_usage.record_usage(
@@ -249,6 +277,7 @@ class ChatService:
                     wallet_debit_status="not_applicable" if conn_kind else "pending",
                     cc_metadata=(
                         {
+                            **(extra_metadata or {}),
                             **({"serving_backend": serving_backend} if serving_backend else {}),
                             **(
                                 {"backend_fallback_from": backend_fallback_from}
@@ -318,7 +347,7 @@ class ChatService:
 
             # Accrue this call's CU onto the key's spend budgets (Redis only).
             if conn_kind is None:
-                await self._policy.record_key_usage(api_key_id, budgets, compute_units)
+                await self._policy.record_key_usage(api_key_id, budgets, compute_units, user_id=user_id)
 
         except Exception as e:
             logger.error("Background post-request failed", exc_info=e)
@@ -337,6 +366,10 @@ class ChatService:
 
         if isinstance(e, (ModelNotFoundError, ModelNotAvailableError)):
             return True  # a fallback candidate may be misspelled/retired — skip it
+        if isinstance(e, ProviderTimeoutError):
+            # The prompt is billed and generating upstream — a hop or a
+            # fallback model would bill it again (incident 2026-09-29).
+            return False
         if isinstance(e, CircuitBreakerOpen):
             return True  # per-backend breaker: the next backend may be healthy
         code = getattr(e, "status_code", None)
@@ -346,13 +379,13 @@ class ChatService:
             # Adapters wrap SDK failures as ProviderError; no status means the
             # provider never answered (connection/DNS/timeout) — retriable.
             return True
-        if isinstance(e, (TimeoutError, ConnectionError)):
+        if isinstance(e, ConnectionError):
             return True
         # provider SDK transport errors (openai.APIConnectionError,
         # anthropic.APITimeoutError, httpx.ConnectError, …) don't share a
         # base class across SDKs — classify by family name.
         name = type(e).__name__
-        return "Connection" in name or "Timeout" in name
+        return "Connection" in name or "ConnectTimeout" in name
 
     def _candidates(self, request: ChatCompletionRequest) -> list[str]:
         # primary + up to 3 client-supplied fallbacks, deduped, order kept
@@ -564,6 +597,7 @@ class ChatService:
         trace_id = str(uuid.uuid4())
         start_time = time.perf_counter()
         served_backend: str | None = None  # for failure-row attribution
+        inflight_slot: str | None = None  # low-balance in-flight cap (billing gate)
         conn = None  # tenant connection, if one serves this request (set after the gate)
 
         try:
@@ -589,6 +623,9 @@ class ChatService:
                     limit=0.0,
                     current_usage=0.0,
                 )
+            inflight_slot, inflight_block = await self._billing.reserve_inflight(user_id)
+            if inflight_block:
+                raise WalletEmptyError(inflight_block)
 
             # 3. Resolve the serving adapter. `user/…` tags are tenant models
             # (byom) — resolved through the per-user overlay, never the
@@ -686,7 +723,7 @@ class ChatService:
             self._policy.check_model_access(
                 model_policy, requested=request.model, resolved=resolved_model_tag
             )
-            await self._policy.check_budgets(api_key_id, budgets)
+            await self._policy.check_budgets(api_key_id, budgets, user_id=user_id)
 
             # 4. Capability validation (byom: skipped — the user's endpoint
             # is authoritative; unsupported features surface as its errors)
@@ -922,6 +959,9 @@ class ChatService:
                 error_detail=str(e),
             )
             raise
+        finally:
+            if inflight_slot is not None:
+                self._fire_and_forget(self._billing.release_inflight(inflight_slot))
 
     async def _mark_conn_invalid(self, conn_id: int) -> None:
         from mlpal_assistants_service.db.session import async_session_factory
@@ -962,6 +1002,10 @@ class ChatService:
         trace_id = str(uuid.uuid4())
         start_time = time.perf_counter()
         served_backend: str | None = None  # for failure-row attribution
+        inflight_slot: str | None = None  # low-balance in-flight cap (billing gate)
+        partial_usage: TokenUsage | None = None  # input side, from the first provider event
+        provider_stream: AsyncIterator[StreamChunk] | None = None
+        abandon: dict[str, Any] | None = None  # what a client-disconnect row needs
         conn = None  # tenant connection, if one serves this request (set after the gate)
 
         try:
@@ -987,6 +1031,9 @@ class ChatService:
                     limit=0.0,
                     current_usage=0.0,
                 )
+            inflight_slot, inflight_block = await self._billing.reserve_inflight(user_id)
+            if inflight_block:
+                raise WalletEmptyError(inflight_block)
 
             # 3. Resolve the serving adapter. `user/…` tags are tenant models
             # (byom) — resolved through the per-user overlay, never the
@@ -1076,6 +1123,15 @@ class ChatService:
             resolved_model_tag = (
                 routing_metadata.resolved_model if routing_metadata else request.model
             )
+            abandon = {
+                "resolved_model_tag": resolved_model_tag,
+                "byom": byom_ref is not None,
+                "provider": model_info.provider if byom_ref is None else "byom",
+                "cached_included": adapter.cached_tokens_included_in_input,
+                "conn_kind": conn.kind if conn else None,
+                "serving_backend": f"{conn.kind}:{conn.backend}" if conn else adapter.backend_name,
+                "billing_needs_ensure": not billing_existed,
+            }
 
             # 3b. Per-key policy gate (no-op when the key has no policy). Model
             # access is checked against the requested tag AND the resolved model
@@ -1084,7 +1140,7 @@ class ChatService:
             self._policy.check_model_access(
                 model_policy, requested=request.model, resolved=resolved_model_tag
             )
-            await self._policy.check_budgets(api_key_id, budgets)
+            await self._policy.check_budgets(api_key_id, budgets, user_id=user_id)
 
             # 4. Capability validation (byom: skipped — the user's endpoint
             # is authoritative; unsupported features surface as its errors)
@@ -1135,7 +1191,7 @@ class ChatService:
             )
 
             async with breaker:
-                async for chunk in adapter.chat_stream(
+                provider_stream = adapter.chat_stream(
                     model=provider_model_id,
                     messages=messages,
                     temperature=request.temperature,
@@ -1148,7 +1204,8 @@ class ChatService:
                     mcp_servers=mcp_servers,
                     model_kwargs=request.model_kwargs,
                     reasoning_effort=effort.applied,
-                ):
+                )
+                async for chunk in provider_stream:
                     if chunk.done:
                         if chunk.content:
                             streamed_parts.append(chunk.content)
@@ -1248,6 +1305,13 @@ class ChatService:
                                 routing=routing_metadata,
                             )
                     else:
+                        if chunk.usage is not None:
+                            # Input-side usage from the provider's first event
+                            # (Anthropic message_start, Gemini usage_metadata):
+                            # what a client-abandoned stream is metered from.
+                            partial_usage = chunk.usage
+                            if not chunk.content and not chunk.tool_calls and not chunk.thinking:
+                                continue
                         # Mid-stream chunk: text delta and/or a completed tool call.
                         if chunk.content:
                             streamed_parts.append(chunk.content)
@@ -1257,6 +1321,31 @@ class ChatService:
                             tool_calls=self._convert_adapter_tool_calls(chunk.tool_calls),
                         )
 
+        except (asyncio.CancelledError, GeneratorExit):
+            # The client left mid-stream: the endpoint cancels its producer
+            # (CancelledError lands here when we were awaiting the provider)
+            # or closes this generator (GeneratorExit when we were suspended
+            # at a yield). Nothing may be awaited HERE: the request's cancel
+            # scope keeps re-cancelling this task until it unwinds, so the
+            # teardown runs in a detached task — stop the provider (every
+            # further token is billed), then put the abandoned stream in the
+            # ledger: the input side when the first event surfaced it,
+            # otherwise a visible 0-token row. Never a silent gap.
+            self._fire_and_forget(
+                self._record_abandoned_stream(
+                    user_id=user_id,
+                    api_key_id=api_key_id,
+                    trace_id=trace_id,
+                    request_model=request.model,
+                    abandon=abandon,
+                    usage=partial_usage,
+                    start_time=start_time,
+                    budgets=budgets,
+                    served_backend=served_backend,
+                    provider_stream=provider_stream,
+                )
+            )
+            raise
         except CircuitBreakerOpen as e:
             await self._record_failure(
                 user_id=user_id,
@@ -1286,6 +1375,9 @@ class ChatService:
                 error_detail=str(e),
             )
             raise
+        finally:
+            if inflight_slot is not None:
+                self._fire_and_forget(self._billing.release_inflight(inflight_slot))
 
     async def get_cost_estimate(
         self,
@@ -1435,6 +1527,75 @@ class ChatService:
                 converted["name"] = msg.name
             result.append(converted)
         return result
+
+    async def _record_abandoned_stream(
+        self,
+        *,
+        user_id: int,
+        api_key_id: int,
+        trace_id: str,
+        request_model: str,
+        abandon: dict[str, Any] | None,
+        usage: TokenUsage | None,
+        start_time: float,
+        budgets: list | None,
+        served_backend: str | None,
+        provider_stream: AsyncIterator[StreamChunk] | None = None,
+    ) -> None:
+        """Meter a stream the client abandoned (runs detached from the request
+        task). With the provider's input-side usage in hand this is an
+        ordinary success row (the output count is the provider's last report,
+        flagged ``output_tokens_known=false``); without it, an error row that
+        names the disconnect."""
+        if provider_stream is not None:
+            try:
+                await provider_stream.aclose()
+            except Exception:  # noqa: BLE001 — the provider stream may already be gone
+                logger.debug("provider stream aclose failed", exc_info=True)
+        logger.warning(
+            "stream abandoned by client trace=%s model=%s usage_known=%s",
+            trace_id, (abandon or {}).get("resolved_model_tag", request_model), usage is not None,
+        )
+        if abandon is None or usage is None or abandon["byom"]:
+            await self._record_failure(
+                user_id=user_id,
+                api_key_id=api_key_id,
+                trace_id=trace_id,
+                model_tag=abandon["resolved_model_tag"] if abandon else request_model,
+                error_code="client_disconnect",
+                start_time=start_time,
+                serving_backend=served_backend,
+                error_detail="client disconnected before the provider reported usage",
+            )
+            return
+        compute_units = await self._pricing.calculate_compute_units(
+            model_tag=abandon["resolved_model_tag"],
+            input_units=usage.input_tokens,
+            output_units=usage.output_tokens,
+            cached_units=usage.cached_tokens,
+            cached_included=abandon["cached_included"],
+            provider=abandon["provider"],
+            cache_write_5m_units=usage.cache_write_5m_tokens,
+            cache_write_1h_units=usage.cache_write_1h_tokens,
+        )
+        wire_usage = _wire_token_usage(usage, abandon["cached_included"])
+        await self._post_request_background(
+            user_id=user_id,
+            api_key_id=api_key_id,
+            trace_id=trace_id,
+            resolved_model_tag=abandon["resolved_model_tag"],
+            provider=abandon["provider"],
+            input_tokens=wire_usage.input_tokens,
+            output_tokens=wire_usage.output_tokens,
+            cache_read_tokens=wire_usage.cached_tokens,
+            compute_units=compute_units,
+            latency_ms=int((time.perf_counter() - start_time) * 1000),
+            billing_needs_ensure=abandon["billing_needs_ensure"],
+            budgets=budgets,
+            serving_backend=abandon["serving_backend"],
+            conn_kind=abandon["conn_kind"],
+            extra_metadata={"stream_aborted": True, "output_tokens_known": False},
+        )
 
     async def _record_failure(
         self,

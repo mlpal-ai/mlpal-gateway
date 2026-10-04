@@ -12,8 +12,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.db.models import UsageLog
+from mlpal_assistants_service.observability.client import get_client_ip, get_client_ua_hash
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_compute_units(provider: str, model_tag: str, compute_units: Decimal) -> None:
+    """Spend-rate metric behind the SpendRate alarms: platform-wide (no
+    dimensions) and per provider/model. Low cardinality on purpose — never
+    per user or per key (that is what usage_logs is for)."""
+    try:
+        from mlpal_assistants_service.core.metrics import get_metrics
+
+        m = get_metrics()
+        m.put_metric_sync("ComputeUnits", float(compute_units), "None")
+        m.put_metric_sync(
+            "ComputeUnits", float(compute_units), "None", {"provider": provider, "model": model_tag}
+        )
+    except Exception:  # noqa: BLE001 — metrics never break recording
+        logger.debug("ComputeUnits metric emit failed", exc_info=True)
+
+
+def wallet_spent_key(user_id: int | str) -> str:
+    """Redis key of a user's running billed-CU total (see record_usage)."""
+    return f"wallet:spent:{user_id}"
 
 
 class UsageService:
@@ -25,6 +47,10 @@ class UsageService:
     """
 
     QUOTA_CACHE_TTL = 300  # 5 minutes
+    # Billed-CU counter behind the admission gate: must outlive any wallet
+    # snapshot by a wide margin, or an idle user's counter restarts below the
+    # snapshot baseline and the gate falls back to the bare balance.
+    SPENT_COUNTER_TTL = 7 * 24 * 3600
 
     def __init__(
         self,
@@ -90,6 +116,15 @@ class UsageService:
             cache_key = f"quota:{user_id}:monthly"
             await self.redis.incrbyfloat(cache_key, float(compute_units))
             await self.redis.expire(cache_key, self.QUOTA_CACHE_TTL)
+            if status == "success" and compute_units > 0:
+                # Running total of billed CU, read by the admission gate as
+                # "spent since the wallet snapshot" (repositories/billing_repository
+                # effective balance). Monotonic; the gate keys off deltas.
+                spent_key = wallet_spent_key(user_id)
+                await self.redis.incrbyfloat(spent_key, float(compute_units))
+                await self.redis.expire(spent_key, self.SPENT_COUNTER_TTL)
+        if status == "success" and compute_units > 0:
+            _emit_compute_units(provider, model_tag, compute_units)
 
         # Queue usage record for async DB write
         usage_record = {
@@ -109,6 +144,8 @@ class UsageService:
             "wallet_debit_attempts": wallet_debit_attempts,
             "wallet_debit_error": wallet_debit_error,
             "cc_metadata": cc_metadata,
+            "client_ip": get_client_ip(),
+            "client_ua_hash": get_client_ua_hash(),
             "timestamp": datetime.now(UTC).isoformat(),
         }
 
@@ -183,6 +220,8 @@ class UsageService:
             wallet_debit_attempts=record.get("wallet_debit_attempts", 0),
             wallet_debit_error=record.get("wallet_debit_error"),
             cc_metadata=record.get("cc_metadata"),
+            client_ip=record.get("client_ip"),
+            client_ua_hash=record.get("client_ua_hash"),
         )
         self.session.add(usage_log)
         await self.session.flush()

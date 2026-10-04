@@ -183,6 +183,12 @@ class AnthropicEdge:
                         usage_dict.update(msg.get("usage") or {})
                     elif event_type == "message_delta":
                         usage_dict.update(data.get("usage") or {})
+                    else:
+                        continue
+                    # Progressive report: the input side is final at
+                    # message_start, so a stream the client abandons is still
+                    # metered from what the provider has already billed.
+                    ctx.report(CanonicalUsage.from_anthropic(usage_dict), 200, msg_id)
         ctx.report(
             CanonicalUsage.from_anthropic(usage_dict) if status_code == 200 else None,
             status_code,

@@ -17,6 +17,7 @@ from mlpal_assistants_service.core.auth import (
 from mlpal_assistants_service.core.cache import CacheInvalidator
 from mlpal_assistants_service.core.config import Settings, get_settings
 from mlpal_assistants_service.core.exceptions import (
+    AccountHeldError,
     APIKeySuspendedError,
     InvalidAPIKeyError,
     RateLimitExceededError,
@@ -26,7 +27,7 @@ from mlpal_assistants_service.core.storage import AssetStorageService
 from mlpal_assistants_service.db.models import APIKey
 from mlpal_assistants_service.db.session import get_session
 from mlpal_assistants_service.repositories.meta_routing_repository import MetaRoutingRepository
-from mlpal_assistants_service.services.api_key import APIKeyService
+from mlpal_assistants_service.services.api_key import HOLD_MESSAGE, APIKeyService
 from mlpal_assistants_service.services.audio import AudioService
 from mlpal_assistants_service.services.chat import ChatService
 from mlpal_assistants_service.services.embedding import EmbeddingService
@@ -262,7 +263,7 @@ async def get_current_api_key(
     api_key = parts[1]
 
     try:
-        return await api_key_service.validate_key(api_key)
+        key = await api_key_service.validate_key(api_key)
     except APIKeySuspendedError:
         raise  # shaped by main.suspended_handler: 403 {code: account_suspended, message}
     except InvalidAPIKeyError as e:
@@ -271,6 +272,11 @@ async def get_current_api_key(
             detail=str(e),
             headers={"WWW-Authenticate": "Bearer"},
         )
+    # A signup-risk hold means read-only everywhere, not just no new keys:
+    # on 2026-09-30 a held account still drove the agent harness. Cached 60 s.
+    if await api_key_service.held(key.user_id):
+        raise AccountHeldError(HOLD_MESSAGE)  # 403 risk_hold (main.held_handler)
+    return key
 
 
 CurrentAPIKey = Annotated[APIKey, Depends(get_current_api_key)]

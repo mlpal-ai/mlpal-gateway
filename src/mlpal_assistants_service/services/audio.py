@@ -37,6 +37,7 @@ from mlpal_assistants_service.schemas.audio import (
     TTSResponse,
 )
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
+from mlpal_assistants_service.services.account_trust import AccountTrustService
 from mlpal_assistants_service.services.policy import PolicyService
 from mlpal_assistants_service.services.pricing import PricingService
 from mlpal_assistants_service.services.router import ModelRouter
@@ -106,7 +107,9 @@ class AudioService:
         self._usage = UsageService(session, redis_client, sqs_client)
         # Per-key policy engine. Pre-check reconciles budget spend from the
         # request session's usage repo; accrual (post-request) is Redis-only.
-        self._policy = PolicyService(redis_client, UsageRepository(session))
+        self._policy = PolicyService(
+            redis_client, UsageRepository(session), trust=AccountTrustService(session, redis_client)
+        )
 
         # Inject shared caches for hot-path optimization
         if shared_caches:
@@ -201,7 +204,7 @@ class AudioService:
                 await bg_session.commit()
 
             # Accrue this call's CU onto the key's spend budgets (Redis only).
-            await self._policy.record_key_usage(api_key_id, budgets, compute_units)
+            await self._policy.record_key_usage(api_key_id, budgets, compute_units, user_id=user_id)
 
         except Exception as e:
             logger.error("Background post-request failed", exc_info=e)
@@ -280,7 +283,7 @@ class AudioService:
             self._policy.check_model_access(
                 model_policy, requested=request.model, resolved=resolved_model_tag
             )
-            await self._policy.check_budgets(api_key_id, budgets)
+            await self._policy.check_budgets(api_key_id, budgets, user_id=user_id)
 
             # 3. Execute request with circuit breaker
             async with breaker:
@@ -488,7 +491,7 @@ class AudioService:
             self._policy.check_model_access(
                 model_policy, requested=request.model, resolved=resolved_model_tag
             )
-            await self._policy.check_budgets(api_key_id, budgets)
+            await self._policy.check_budgets(api_key_id, budgets, user_id=user_id)
 
             # Create file attachment from audio data
             audio_attachment = FileAttachment(

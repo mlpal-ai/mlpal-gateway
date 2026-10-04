@@ -66,7 +66,10 @@ async def wallet_cache_invalidate(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="cache unavailable"
         )
-    deleted = await redis.delete(f"wallet:{body.platform_user_id}")
+    uid = body.platform_user_id
+    # One call clears everything the gate caches about the account: wallet
+    # snapshot, signup-risk hold, and the young-account trust profile.
+    deleted = await redis.delete(f"wallet:{uid}", f"hold:{uid}", f"trust:{uid}")
     logger.info(
         "wallet cache invalidated",
         extra={"user_id": body.platform_user_id, "existed": bool(deleted)},

@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 import aioboto3
-from tenacity import retry, stop_after_attempt, wait_exponential
+from botocore.config import Config as BotoConfig
 
 from mlpal_assistants_service.adapters.base import (
     AdapterResponse,
@@ -29,12 +29,15 @@ from mlpal_assistants_service.adapters.base import (
     UnsupportedModalityError,
     provider_status_code,
 )
+from mlpal_assistants_service.adapters.retry import call_provider, is_timeout, read_timeout_seconds
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
     ProviderError,
+    ProviderTimeoutError,
     ProviderUnavailableError,
     UnsupportedCapabilityError,
 )
+from mlpal_assistants_service.seams.egress_guard import EndpointRejected, guarded_fetch_sync
 
 logger = logging.getLogger(__name__)
 
@@ -237,6 +240,15 @@ class BedrockAdapter(BaseAdapter):
             aws_secret_access_key=self._aws_secret_access_key,
         )
 
+    def _runtime_config(self) -> BotoConfig:
+        # botocore's own retries are off: adapters/retry.py is the only retry
+        # layer, and a read timeout must never be re-attempted (re-bills).
+        return BotoConfig(
+            retries={"max_attempts": 1, "mode": "standard"},
+            connect_timeout=10,
+            read_timeout=read_timeout_seconds(),
+        )
+
     # =========================================================================
     # Model Capabilities
     # =========================================================================
@@ -348,11 +360,6 @@ class BedrockAdapter(BaseAdapter):
     # Chat Completion
     # =========================================================================
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
     async def chat(
         self,
         model: str,
@@ -377,7 +384,9 @@ class BedrockAdapter(BaseAdapter):
             if files:
                 self.validate_file_attachments(model, files)
 
-            async with self._session.client("bedrock-runtime") as client:
+            async with self._session.client(
+                "bedrock-runtime", config=self._runtime_config()
+            ) as client:
                 # Normalize messages for Bedrock format
                 system_messages, bedrock_messages = self._normalize_messages(messages)
 
@@ -446,8 +455,9 @@ class BedrockAdapter(BaseAdapter):
                         **model_kwargs,
                     }
 
-                # Make API call
-                response = await client.converse(**params)
+                response = await call_provider(
+                    lambda: client.converse(**params), provider=self.provider_name
+                )
 
                 latency_ms = int((time.perf_counter() - start_time) * 1000)
 
@@ -494,13 +504,20 @@ class BedrockAdapter(BaseAdapter):
                     raw_response=response,
                 )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             error_message = str(e)
 
             logger.error(f"Bedrock chat error after {latency_ms}ms: {error_message}")
+
+            if is_timeout(e):
+                raise ProviderTimeoutError(
+                    message=f"Bedrock request timed out after {latency_ms}ms",
+                    provider=self.provider_name,
+                    original_error=error_message,
+                )
 
             if "throttl" in error_message.lower() or "rate" in error_message.lower():
                 raise ProviderUnavailableError(
@@ -676,7 +693,7 @@ class BedrockAdapter(BaseAdapter):
                     finish_reason=self._map_stop_reason(stop_reason),
                 )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             logger.error(f"Bedrock streaming error: {e}")
@@ -861,7 +878,6 @@ class BedrockAdapter(BaseAdapter):
         """Build image content block from FileAttachment."""
         import base64 as b64_module
 
-        import httpx
 
         mime = attachment.mime_type or "image/png"
         format_type = mime.split("/")[-1]  # e.g., "png", "jpeg"
@@ -876,9 +892,7 @@ class BedrockAdapter(BaseAdapter):
             }
         elif attachment.source == FileSource.URL:
             try:
-                with httpx.Client(timeout=30.0) as client:
-                    response = client.get(attachment.data)
-                    response.raise_for_status()
+                with guarded_fetch_sync(attachment.data, timeout=30.0) as response:
                     image_bytes = response.content
                     if attachment.mime_type is None:
                         content_type = response.headers.get("content-type", mime)
@@ -890,6 +904,8 @@ class BedrockAdapter(BaseAdapter):
                             "source": {"bytes": image_bytes},
                         }
                     }
+            except EndpointRejected:
+                raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped image
             except Exception as e:
                 logger.warning(f"Failed to fetch image from URL: {e}")
                 return None
@@ -913,7 +929,6 @@ class BedrockAdapter(BaseAdapter):
         """Build document content block from FileAttachment (for PDFs)."""
         import base64 as b64_module
 
-        import httpx
 
         mime = attachment.mime_type or "application/pdf"
         format_type = "pdf" if "pdf" in mime else mime.split("/")[-1]
@@ -930,9 +945,7 @@ class BedrockAdapter(BaseAdapter):
             }
         elif attachment.source == FileSource.URL:
             try:
-                with httpx.Client(timeout=60.0) as client:
-                    response = client.get(attachment.data)
-                    response.raise_for_status()
+                with guarded_fetch_sync(attachment.data, timeout=60.0) as response:
                     doc_bytes = response.content
                     return {
                         "document": {
@@ -941,6 +954,8 @@ class BedrockAdapter(BaseAdapter):
                             "source": {"bytes": doc_bytes},
                         }
                     }
+            except EndpointRejected:
+                raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped document
             except Exception as e:
                 logger.warning(f"Failed to fetch document from URL: {e}")
                 return None
@@ -994,11 +1009,8 @@ class BedrockAdapter(BaseAdapter):
             }
         elif image.get("url"):
             # Fetch the image for Bedrock
-            import httpx
             try:
-                with httpx.Client(timeout=30.0) as client:
-                    response = client.get(image["url"])
-                    response.raise_for_status()
+                with guarded_fetch_sync(image["url"], timeout=30.0) as response:
                     image_bytes = response.content
                     content_type = response.headers.get("content-type", "image/png")
                     mime_type = content_type.split(";")[0].strip()
@@ -1009,6 +1021,8 @@ class BedrockAdapter(BaseAdapter):
                             "source": {"bytes": image_bytes},
                         }
                     }
+            except EndpointRejected:
+                raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped image
             except Exception as e:
                 logger.warning(f"Failed to fetch image from URL: {e}")
                 return None
@@ -1018,7 +1032,6 @@ class BedrockAdapter(BaseAdapter):
         """Build document content block for PDFs from legacy dict format."""
         import base64 as b64_module
 
-        import httpx
 
         mime_type = doc.get("mime_type", "application/pdf")
         format_type = "pdf" if "pdf" in mime_type else mime_type.split("/")[-1]
@@ -1035,9 +1048,7 @@ class BedrockAdapter(BaseAdapter):
             }
         elif doc.get("url"):
             try:
-                with httpx.Client(timeout=60.0) as client:
-                    response = client.get(doc["url"])
-                    response.raise_for_status()
+                with guarded_fetch_sync(doc["url"], timeout=60.0) as response:
                     doc_bytes = response.content
                     return {
                         "document": {
@@ -1046,6 +1057,8 @@ class BedrockAdapter(BaseAdapter):
                             "source": {"bytes": doc_bytes},
                         }
                     }
+            except EndpointRejected:
+                raise  # policy refusal → 400 (main.egress_rejected_handler), never a silently dropped document
             except Exception as e:
                 logger.warning(f"Failed to fetch document from URL: {e}")
                 return None

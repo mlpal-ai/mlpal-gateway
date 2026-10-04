@@ -32,6 +32,7 @@ from mlpal_assistants_service.schemas.embeddings import (
     EmbeddingUsage,
 )
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
+from mlpal_assistants_service.services.account_trust import AccountTrustService
 from mlpal_assistants_service.services.policy import PolicyService
 from mlpal_assistants_service.services.pricing import PricingService
 from mlpal_assistants_service.services.rate_limiter import RateLimiter
@@ -83,7 +84,9 @@ class EmbeddingService:
         self._usage = UsageService(session, redis_client, sqs_client)
         # Per-key policy engine. Pre-check reconciles budget spend from the
         # request session's usage repo; accrual (post-request) is Redis-only.
-        self._policy = PolicyService(redis_client, UsageRepository(session))
+        self._policy = PolicyService(
+            redis_client, UsageRepository(session), trust=AccountTrustService(session, redis_client)
+        )
         self._rate_limiter = RateLimiter(redis_client) if redis_client else None
 
         # Inject shared caches for hot-path optimization

@@ -8,7 +8,6 @@ from typing import Any
 
 import httpx
 from anthropic import AsyncAnthropic
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from mlpal_assistants_service.adapters.base import (
     AdapterResponse,
@@ -28,12 +27,15 @@ from mlpal_assistants_service.adapters.base import (
     UnsupportedModalityError,
     provider_status_code,
 )
+from mlpal_assistants_service.adapters.retry import call_provider, is_timeout
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
     ProviderError,
+    ProviderTimeoutError,
     ProviderUnavailableError,
     UnsupportedCapabilityError,
 )
+from mlpal_assistants_service.seams.egress_guard import EndpointRejected
 
 logger = logging.getLogger(__name__)
 
@@ -245,6 +247,7 @@ class AnthropicAdapter(BaseAdapter):
         self._client = AsyncAnthropic(
             api_key=self._api_key,
             http_client=http_client,
+            max_retries=0,  # adapters/retry.py is the only retry layer
         )
 
     # =========================================================================
@@ -364,11 +367,6 @@ class AnthropicAdapter(BaseAdapter):
     # Chat Completion
     # =========================================================================
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        reraise=True,
-    )
     async def chat(
         self,
         model: str,
@@ -475,14 +473,10 @@ class AnthropicAdapter(BaseAdapter):
                 params["extra_body"] = {**params.get("extra_body", {}), **model_kwargs}
             _apply_effort(params, reasoning_effort)
 
-            # Make API call (use beta API for MCP)
-            if use_beta:
-                response = await self._client.beta.messages.create(
-                    betas=["mcp-client-2025-11-20"],
-                    **params,
-                )
-            else:
-                response = await self._client.messages.create(**params)
+            response = await call_provider(
+                lambda: self._complete_via_stream(params, use_beta),
+                provider=self.provider_name,
+            )
 
             # If structured output was requested via tool use, extract the tool result as content
             if _structured_tool_name:
@@ -537,13 +531,20 @@ class AnthropicAdapter(BaseAdapter):
                 raw_response=response.model_dump(),
             )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             latency_ms = int((time.perf_counter() - start_time) * 1000)
             error_message = str(e)
 
             logger.error(f"Anthropic chat error after {latency_ms}ms: {error_message}")
+
+            if is_timeout(e):
+                raise ProviderTimeoutError(
+                    message=f"Anthropic request timed out after {latency_ms}ms",
+                    provider=self.provider_name,
+                    original_error=error_message,
+                )
 
             if "rate_limit" in error_message.lower() or "overloaded" in error_message.lower():
                 raise ProviderUnavailableError(
@@ -557,6 +558,19 @@ class AnthropicAdapter(BaseAdapter):
                 status_code=provider_status_code(e),
                 original_error=error_message,
             )
+
+    async def _complete_via_stream(self, params: dict[str, Any], use_beta: bool) -> Any:
+        """Non-streaming completion carried over the streaming transport and
+        reassembled by the SDK (`get_final_message()` is the same Message
+        `create()` returns). The read timeout then applies per event, not to
+        the whole generation, so a long Opus answer cannot trip the socket
+        timeout and get re-billed; a stall mid-stream still times out."""
+        if use_beta:
+            ctx = self._client.beta.messages.stream(betas=["mcp-client-2025-11-20"], **params)
+        else:
+            ctx = self._client.messages.stream(**params)
+        async with ctx as stream:
+            return await stream.get_final_message()
 
     # =========================================================================
     # Streaming
@@ -669,6 +683,14 @@ class AnthropicAdapter(BaseAdapter):
                 tool_input_json = ""
 
                 async for event in stream:
+                    # Input-side usage is final at message_start: surface it so
+                    # the service can meter a stream the client abandons.
+                    if event.type == "message_start":
+                        yield StreamChunk(
+                            content="", done=False,
+                            usage=self._token_usage(event.message.usage),
+                        )
+                        continue
                     # Handle text delta
                     if event.type == "content_block_delta":
                         if hasattr(event.delta, "text"):
@@ -716,10 +738,16 @@ class AnthropicAdapter(BaseAdapter):
                             finish_reason=self._map_stop_reason(final_message.stop_reason),
                         )
 
-        except (UnsupportedModalityError, UnsupportedCapabilityError):
+        except (UnsupportedModalityError, UnsupportedCapabilityError, EndpointRejected):
             raise
         except Exception as e:
             logger.error(f"Anthropic streaming error: {e}")
+            if is_timeout(e):
+                raise ProviderTimeoutError(
+                    message=f"Anthropic stream timed out: {e}",
+                    provider=self.provider_name,
+                    original_error=str(e),
+                )
             raise ProviderError(
                 message=f"Anthropic streaming error: {e}",
                 provider=self.provider_name,

@@ -318,9 +318,10 @@ class MessagesV2Core:
         the stream is committed and faults propagate."""
         breaker = self._breaker(ctx)
         emitted = False
+        upstream = edge.stream(req, ctx)
         try:
             async with breaker if breaker is not None else contextlib.nullcontext():
-                async for chunk in edge.stream(req, ctx):
+                async for chunk in upstream:
                     emitted = True
                     await queue.put(("chunk", chunk))
                 if ctx.status_code in self._FALLBACK_STATUSES:
@@ -349,6 +350,16 @@ class MessagesV2Core:
             )
             live["ctx"] = retry_ctx
             await self._pump(retry_edge, req, retry_ctx, model, t0, queue, live, hop=True)
+        finally:
+            # A cancel that lands on `queue.put` (client gone, queue full)
+            # would otherwise leave the provider connection open until GC —
+            # and every token it keeps generating is billed.
+            try:
+                await upstream.aclose()
+            except asyncio.CancelledError:
+                pass  # cancellation already unwinding; the generator closes with it
+            except Exception:  # noqa: BLE001 — closing is best effort
+                logger.debug("edge stream aclose failed", exc_info=True)
 
     # -- request handling ---------------------------------------------------
     async def handle(
@@ -451,12 +462,15 @@ class MessagesV2Core:
                     resolved=model.model_tag,
                 )
                 await self._policy.check_budgets(
-                    api_key.id, getattr(api_key, "budgets", None)
-                )
+                    api_key.id, getattr(api_key, "budgets", None), user_id=api_key.user_id,)
         except RateLimitExceededError as e:
             return Response(error_body(429, str(e)), 429, media_type="application/json")
         except (ModelAccessDeniedError, BudgetExceededError) as e:
             return Response(error_body(403, str(e)), 403, media_type="application/json")
+
+        inflight_slot, inflight_block = await self._billing.reserve_inflight(api_key.user_id)
+        if inflight_block:
+            return Response(error_body(402, inflight_block), 402, media_type="application/json")
 
         cc_metadata = _cc_metadata(headers, req.metadata)
         cc_metadata["stream"] = bool(req.stream)
@@ -499,6 +513,7 @@ class MessagesV2Core:
             headers=headers,
             cc_metadata=cc_metadata,
             conn_kind=("byom" if byom else "byok" if tenant_plan else None),
+            inflight_slot=inflight_slot,
             conn_id=(
                 byom[2].conn.id if byom else tenant_plan[3].id if tenant_plan else None
             ),
@@ -512,6 +527,7 @@ class MessagesV2Core:
         try:
             _resolve_request_effort(req, ctx)
         except (ValidationError, UnsupportedEffortError) as e:
+            await self._billing.release_inflight(inflight_slot)
             return Response(error_body(400, e.message), 400, media_type="application/json")
         try:
             if byom is not None:
@@ -525,6 +541,7 @@ class MessagesV2Core:
             else:
                 edge = self._edge_for(model)
         except ModelNotAllowed as e:
+            await self._billing.release_inflight(inflight_slot)
             return Response(error_body(400, str(e)), 400, media_type="application/json")
 
         t0 = time.perf_counter()
@@ -538,7 +555,11 @@ class MessagesV2Core:
                 },
             )
 
-        result, ctx = await self._invoke(edge, req, ctx, model, t0)
+        try:
+            result, ctx = await self._invoke(edge, req, ctx, model, t0)
+        finally:
+            if inflight_slot is not None:
+                _spawn(self._billing.release_inflight(inflight_slot))
         compute_units = await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
         # Opt-in payload capture — hard-off keys skip even the task spawn;
         # enabled-check + key resolution + zlib all happen inside the task.
@@ -737,13 +758,25 @@ class MessagesV2Core:
         finally:
             keepalive.cancel()
             producer.cancel()
-            try:
-                await producer
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                pass
             ctx = live["ctx"]
+            if ctx.inflight_slot is not None:
+                _spawn(self._billing.release_inflight(ctx.inflight_slot))
             if not metered:
-                await self._meter(ctx, int((time.perf_counter() - t0) * 1000))
+                # Only a client disconnect lands here: every stream that ends
+                # with the client attached is metered in the loop above.
+                # Nothing may be awaited here — the request's cancel scope
+                # keeps re-cancelling this task until it unwinds — so the
+                # metering runs detached, on its own session. The edge reports
+                # usage progressively, so the input side (and the provider's
+                # last output count) is billed, not zero.
+                ctx.cc_metadata["client_disconnected"] = True
+                if ctx.usage is not None:
+                    ctx.cc_metadata["output_tokens_known"] = False
+                logger.warning(
+                    f"[v2.messages] stream abandoned by client trace={ctx.trace_id} "
+                    f"model={ctx.model_tag} usage_known={ctx.usage is not None}"
+                )
+                _spawn(self._meter_detached(ctx, int((time.perf_counter() - t0) * 1000)))
             if _key_capture_possible(ctx):
                 _spawn(
                     _capture_v2(
@@ -771,7 +804,30 @@ class MessagesV2Core:
         _spawn(_mark())
 
     # -- telemetry + billing (never raises) ---------------------------------
-    async def _meter(self, ctx: RequestContext, latency_ms: int) -> Decimal:
+    async def _meter_detached(self, ctx: RequestContext, latency_ms: int) -> None:
+        """Meter after the request task is gone: fresh session, own commit."""
+        from mlpal_assistants_service.db.session import async_session_factory
+        from mlpal_assistants_service.services.pricing import PricingService
+        from mlpal_assistants_service.services.usage import UsageService
+
+        redis = getattr(self._usage, "redis", None)
+        sqs = getattr(self._usage, "_sqs_client", None)
+        async with async_session_factory() as session:
+            await self._meter(
+                ctx, latency_ms,
+                usage_service=UsageService(session, redis, sqs),
+                pricing_service=PricingService(session, redis),
+            )
+            await session.commit()
+
+    async def _meter(
+        self,
+        ctx: RequestContext,
+        latency_ms: int,
+        usage_service: Any | None = None,  # fresh-session services for the detached path
+        pricing_service: Any | None = None,
+    ) -> Decimal:
+        usage = usage_service or self._usage
         is_success = ctx.status_code == 200 and ctx.usage is not None
         if ctx.conn_kind and ctx.status_code in (401, 403):
             self._flag_conn_rejected(ctx)
@@ -790,7 +846,7 @@ class MessagesV2Core:
                 Decimal(input_tokens) * inp + Decimal(output_tokens) * outp
             ) / Decimal(1_000_000)
         elif is_success:
-            rates = await self._resolve_cu_rates(ctx.model_tag)
+            rates = await self._resolve_cu_rates(ctx.model_tag, pricing_service)
             if rates is None:
                 logger.warning(f"[v2.messages] no pricing for {ctx.model_tag}; CU=0 trace={ctx.trace_id}")
             else:
@@ -801,7 +857,7 @@ class MessagesV2Core:
                     ctx.cc_metadata["context_tier"] = "long"
                 if cache_cu is None:
                     # No per-model cache-read list price: the provider's
-                    # standard multiple applies (google 0.25x, else 0.10x).
+                    # standard multiple applies (0.10x, env-tunable).
                     from mlpal_assistants_service.services.pricing import (
                         provider_cache_read_multiplier,
                     )
@@ -831,7 +887,7 @@ class MessagesV2Core:
                 "EmptyCompletion", 1, dimensions={"provider": ctx.provider, "model": ctx.model_tag}
             )
         try:
-            await self._usage.record_usage(
+            await usage.record_usage(
                 user_id=str(ctx.api_key.user_id),
                 api_key_id=str(ctx.api_key.id),
                 trace_id=ctx.trace_id,
@@ -847,7 +903,11 @@ class MessagesV2Core:
                 compute_units=Decimal("0") if ctx.conn_kind else compute_units,
                 latency_ms=latency_ms,
                 status="success" if is_success else "error",
-                error_code=None if is_success else f"http_{ctx.status_code}",
+                error_code=(
+                    None if is_success
+                    else "client_disconnect" if ctx.cc_metadata.get("client_disconnected")
+                    else f"http_{ctx.status_code}"
+                ),
                 # "pending" until _post_billing resolves it (debited / failed_* /
                 # not_applicable) — same lifecycle as /v1/chat, so DebitRetryWorker
                 # and reconciliation see this surface identically.
@@ -921,7 +981,7 @@ class MessagesV2Core:
         return self._long_tiers
 
     async def _resolve_cu_rates(
-        self, model_tag: str
+        self, model_tag: str, pricing_service: Any | None = None
     ) -> tuple[Decimal, Decimal, Decimal | None] | None:
         """Per-token CU rates at PASS-THROUGH: the stored cu_rates include the
         row's legacy markup_multiplier (generated columns), so divide the row's
@@ -930,7 +990,7 @@ class MessagesV2Core:
         that must mirror per-row DB state is a correctness trap (caught live:
         OSS rows carry markup 1.0 while the old setting said 3.0 → 3× under-
         billing on /v1/messages vs /v1/chat for identical usage)."""
-        pricing = await self._pricing.get_pricing(model_tag, OPERATION)
+        pricing = await (pricing_service or self._pricing).get_pricing(model_tag, OPERATION)
         if pricing is None:
             return None
         divisor = Decimal("1000") if pricing.rate_unit == "per_1k_tokens" else Decimal("1000000")
@@ -1013,8 +1073,7 @@ class MessagesV2Core:
                 await self._rate_limiter.record_tokens(str(ctx.api_key.user_id), total_tokens)
             if self._policy is not None:
                 await self._policy.record_key_usage(
-                    ctx.api_key.id, getattr(ctx.api_key, "budgets", None), compute_units
-                )
+                    ctx.api_key.id, getattr(ctx.api_key, "budgets", None), compute_units, user_id=ctx.api_key.user_id,)
         except Exception:  # pragma: no cover — billing telemetry must never crash the loop
             logger.exception(
                 f"[v2.messages] post-billing failed user={ctx.api_key.user_id} trace={ctx.trace_id}"

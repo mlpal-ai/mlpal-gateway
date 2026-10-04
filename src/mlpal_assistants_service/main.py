@@ -17,12 +17,14 @@ from mlpal_assistants_service.api.mounting import mount_api
 from mlpal_assistants_service.core.cache import CacheInvalidator
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.core.exceptions import (
+    AccountHeldError,
     APIKeySuspendedError,
     AssistantsServiceError,
     ProviderError,
     WalletEmptyError,
     http_status_for_provider_error,
 )
+from mlpal_assistants_service.core.logging import configure_stdlib_logging
 from mlpal_assistants_service.core.storage import AssetStorageService
 from mlpal_assistants_service.core.telemetry import (
     instrument_app,
@@ -34,9 +36,11 @@ from mlpal_assistants_service.observability.middleware import (
     ObservabilityMiddleware,
 )
 from mlpal_assistants_service.schemas.common import ErrorDetail, ErrorResponse, HealthResponse
+from mlpal_assistants_service.seams.egress_guard import EndpointRejected
 
 logger = structlog.get_logger()
 settings = get_settings()
+configure_stdlib_logging(settings.log_level)
 
 
 def _run_migrations() -> None:
@@ -486,6 +490,49 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     background_tasks.append(asyncio.create_task(_payload_retention_loop()))
 
+    # Abuse detector: one tick per interval across the fleet (Redis lock; a
+    # single box without Redis just runs it), plus a bounded client_ip scrub
+    # once the rows pass retention. Findings are rows + audit log + metric;
+    # enforcement is a flag (observe first).
+    async def _abuse_detector_loop():
+        from datetime import timedelta
+
+        from mlpal_assistants_service.db.session import async_session_factory
+        from mlpal_assistants_service.services.abuse_detector import AbuseDetector, scrub_client_ips
+
+        interval = settings.abuse_detector_interval_seconds
+        lock_ttl = max(interval - 10, 30)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                if app.state.redis is not None:
+                    got = await app.state.redis.set("abuse:detector:lock", "1", nx=True, ex=lock_ttl)
+                    if not got:
+                        continue
+                async with async_session_factory() as session:
+                    findings = await AbuseDetector(
+                        session, app.state.redis, enforce=settings.abuse_enforce
+                    ).run_once()
+                    scrubbed = await scrub_client_ips(
+                        session, older_than=timedelta(days=settings.client_ip_retention_days)
+                    )
+                if findings or scrubbed:
+                    logger.info(
+                        "Abuse detector tick", findings=len(findings), scrubbed_ips=scrubbed,
+                        enforce=settings.abuse_enforce,
+                    )
+            except asyncio.CancelledError:
+                break
+            except Exception as e:  # noqa: BLE001 — detection must never kill the app
+                logger.error("Abuse detector tick failed", error=str(e))
+
+    if settings.abuse_detector_enabled:
+        background_tasks.append(asyncio.create_task(_abuse_detector_loop()))
+        logger.info(
+            "Abuse detector started",
+            interval=settings.abuse_detector_interval_seconds, enforce=settings.abuse_enforce,
+        )
+
     # Wallet debits are a managed-billing concern; in local (self-hosted) mode
     # there is no payments service to call, so don't spin a retry loop that
     # fails every interval against a blank URL.
@@ -638,6 +685,33 @@ async def suspended_handler(request: Request, exc: APIKeySuspendedError) -> JSON
             "type": "error",
             "error": {"type": "permission_error", "code": "account_suspended", "message": exc.message},
         },
+    )
+
+
+@app.exception_handler(AccountHeldError)
+async def held_handler(request: Request, exc: AccountHeldError) -> JSONResponse:
+    """Signup-risk hold: same envelope as suspension so the console has one
+    renderer; `code` is the stable field (risk_hold), `message` is shown verbatim."""
+    return JSONResponse(
+        status_code=403,
+        content={
+            "code": "risk_hold",
+            "message": exc.message,
+            "detail": exc.message,
+            "type": "error",
+            "error": {"type": "permission_error", "code": "risk_hold", "message": exc.message},
+        },
+    )
+
+
+@app.exception_handler(EndpointRejected)
+async def egress_rejected_handler(request: Request, exc: EndpointRejected) -> JSONResponse:
+    """A caller-supplied URL (reference image, attachment, audio) failed the
+    egress policy: it is the caller's input, so 400 with the user-safe reason —
+    never a silently dropped attachment, never a 5xx."""
+    return JSONResponse(
+        status_code=400,
+        content={"error": {"code": "url_rejected", "message": str(exc), "details": None}},
     )
 
 

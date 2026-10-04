@@ -119,6 +119,48 @@ class Settings(BaseSettings):
     )
     # Near-empty wallets cache for less time: the stale-allow window shrinks
     # exactly when the gate is about to close (gating design 2026-08-12).
+    # Low-balance in-flight cap: once the effective balance (snapshot minus CU
+    # billed since) drops under the threshold, at most `cap` requests may be
+    # in flight per user — parallel long-context requests are otherwise all
+    # admitted before any of them records (2026-09-28 farm pattern).
+    wallet_low_balance_inflight_threshold_cu: Decimal = Field(
+        default=Decimal("1.0"), alias="MLPAL_WALLET_LOW_BALANCE_INFLIGHT_THRESHOLD_CU"
+    )
+    wallet_low_balance_inflight_cap: int = Field(
+        default=2, alias="MLPAL_WALLET_LOW_BALANCE_INFLIGHT_CAP"
+    )
+    # When the backend/payments config or balance endpoints are unreachable
+    # and Redis holds nothing: True = serve without the wallet gate for a short
+    # window (tokens pass through, loud error + metric); False = fail the
+    # request. Per-key budgets and the billed-CU counter still apply.
+    wallet_fail_open: bool = Field(default=True, alias="MLPAL_WALLET_FAIL_OPEN")
+    # Young-account ramp (services/account_trust.py): a daily CU ceiling per
+    # ACCOUNT until the first paid top-up — never a model restriction. Off on
+    # local billing (no backend schema).
+    young_account_ramp_enabled: bool = Field(default=True, alias="MLPAL_YOUNG_ACCOUNT_RAMP")
+    young_account_first_window_hours: int = Field(
+        default=48, alias="MLPAL_YOUNG_ACCOUNT_FIRST_WINDOW_HOURS"
+    )
+    young_account_first_ceiling_cu: Decimal = Field(
+        default=Decimal("2"), alias="MLPAL_YOUNG_ACCOUNT_FIRST_CEILING_CU"
+    )
+    young_account_unpaid_ceiling_cu: Decimal = Field(
+        default=Decimal("10"), alias="MLPAL_YOUNG_ACCOUNT_UNPAID_CEILING_CU"
+    )
+    # wallet_transactions.source values that count as "has paid / was vouched for".
+    paid_wallet_sources: str = Field(
+        default="stripe_checkout,auto_reload,admin_grant,invite_code",
+        alias="MLPAL_PAID_WALLET_SOURCES",
+    )
+    account_trust_cache_ttl_seconds: int = Field(
+        default=300, alias="MLPAL_ACCOUNT_TRUST_CACHE_TTL_SECONDS"
+    )
+    # Every new key gets this daily CU budget unless the caller sets budgets
+    # (enterprise tier: none). The owner can change it from the console.
+    default_key_daily_budget_cu: Decimal = Field(
+        default=Decimal("20"), alias="MLPAL_DEFAULT_KEY_DAILY_BUDGET_CU"
+    )
+    hold_cache_ttl_seconds: int = Field(default=60, alias="MLPAL_HOLD_CACHE_TTL_SECONDS")
     wallet_low_balance_cache_ttl_seconds: int = Field(
         default=10,
         alias="MLPAL_WALLET_LOW_BALANCE_CACHE_TTL_SECONDS",
@@ -219,6 +261,32 @@ class Settings(BaseSettings):
     # breakers are per backend, so a dead backend is skipped without paying
     # its timeout once its breaker opens. Off = one backend per model, as before.
     backend_failover_enabled: bool = Field(default=True, alias="MLPAL_BACKEND_FAILOVER")
+    # Non-streaming provider calls wait this long for the complete response
+    # (streams keep the 120 s per-chunk read timeout). A timeout is terminal:
+    # ProviderTimeoutError / HTTP 504, never retried, never hopped — the
+    # prompt is already billed upstream (adapters/retry.py).
+    provider_read_timeout_seconds: float = Field(
+        default=600.0, alias="MLPAL_PROVIDER_READ_TIMEOUT_SECONDS"
+    )
+    # Abuse detector (services/abuse_detector.py): clusters young accounts by
+    # shared client signals every tick. Enforce=False records findings only;
+    # True suspends lockstep clusters. Run in observe mode until the replay
+    # against real traffic shows no false positives.
+    abuse_detector_enabled: bool = Field(default=True, alias="MLPAL_ABUSE_DETECTOR")
+    abuse_detector_interval_seconds: int = Field(
+        default=300, alias="MLPAL_ABUSE_DETECTOR_INTERVAL_SECONDS"
+    )
+    abuse_enforce: bool = Field(default=False, alias="MLPAL_ABUSE_ENFORCE")
+    # Key fan-out (incident B, 2026-09-30: one stolen key used from 110 IPs).
+    # One key seen from >= min_ips distinct IPs spread over >= min_nets /16
+    # networks within an hour is auto-revoked and its owner notified. Keys on
+    # the enterprise tier or tagged fanout_ok=true (serverless fleets) are
+    # reported, never revoked. Independent of MLPAL_ABUSE_ENFORCE: revoking
+    # one key is reversible (the owner re-issues), suspending an account is not.
+    abuse_key_fanout_enforce: bool = Field(default=True, alias="MLPAL_ABUSE_KEY_FANOUT_ENFORCE")
+    abuse_key_fanout_min_ips: int = Field(default=25, alias="MLPAL_ABUSE_KEY_FANOUT_MIN_IPS")
+    abuse_key_fanout_min_nets: int = Field(default=12, alias="MLPAL_ABUSE_KEY_FANOUT_MIN_NETS")
+    client_ip_retention_days: int = Field(default=14, alias="MLPAL_CLIENT_IP_RETENTION_DAYS")
     # Azure OpenAI / AI Foundry, v1 surface (<endpoint>/openai/v1/). Azure
     # addresses models by DEPLOYMENT name; name deployments after the model
     # IDs (e.g. deployment "gpt-5.2" for gpt-5.2) and no mapping is needed.

@@ -340,6 +340,8 @@ def _openai_core(monkeypatch, adapter):
     usage.redis = None
     billing = MagicMock()
     billing.can_make_request_cached = AsyncMock(return_value=(True, None, True))
+    billing.reserve_inflight = AsyncMock(return_value=(None, None))
+    billing.release_inflight = AsyncMock()
     billing.is_wallet_debit_active = AsyncMock(return_value=True)
     billing.debit_wallet_usage = AsyncMock()
     monkeypatch.setattr(core_mod, "get_adapter_factory",
@@ -368,6 +370,8 @@ def _bedrock_core(monkeypatch, adapter):
     usage.redis = None
     billing = MagicMock()
     billing.can_make_request_cached = AsyncMock(return_value=(True, None, True))
+    billing.reserve_inflight = AsyncMock(return_value=(None, None))
+    billing.release_inflight = AsyncMock()
     billing.is_wallet_debit_active = AsyncMock(return_value=True)
     billing.debit_wallet_usage = AsyncMock()
     monkeypatch.setattr(core_mod, "get_adapter_factory",
@@ -668,6 +672,8 @@ async def test_google_edge_sanitizes_tool_schema(monkeypatch):
     usage.redis = None
     billing = MagicMock()
     billing.can_make_request_cached = AsyncMock(return_value=(True, None, True))
+    billing.reserve_inflight = AsyncMock(return_value=(None, None))
+    billing.release_inflight = AsyncMock()
     billing.is_wallet_debit_active = AsyncMock(return_value=True)
     billing.debit_wallet_usage = AsyncMock()
     monkeypatch.setattr(core_mod, "get_adapter_factory",

@@ -226,27 +226,27 @@
     "model_tag": "gemini-2.5-flash",
     "operation": "chat",
     "tier": "standard",
-    "input_rate": "0.15000000",
-    "output_rate": "0.60000000",
+    "input_rate": "0.30000000",
+    "output_rate": "2.50000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "0.04500000",
-    "output_cu_rate": "0.18000000"
+    "input_cu_rate": "0.09000000",
+    "output_cu_rate": "0.75000000"
   },
   {
     "model_tag": "gemini-2.5-flash-lite",
     "operation": "chat",
     "tier": "economy",
-    "input_rate": "0.07500000",
-    "output_rate": "0.30000000",
+    "input_rate": "0.10000000",
+    "output_rate": "0.40000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "0.02250000",
-    "output_cu_rate": "0.09000000"
+    "input_cu_rate": "0.03000000",
+    "output_cu_rate": "0.12000000"
   },
   {
     "model_tag": "gemini-2.5-pro",
@@ -269,14 +269,14 @@
     "model_tag": "gemini-3-flash-preview",
     "operation": "chat",
     "tier": "standard",
-    "input_rate": "0.30000000",
-    "output_rate": "2.50000000",
+    "input_rate": "0.50000000",
+    "output_rate": "3.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "0.09000000",
-    "output_cu_rate": "0.75000000"
+    "input_cu_rate": "0.15000000",
+    "output_cu_rate": "0.90000000"
   },
   {
     "model_tag": "gemini-3-pro-image",
@@ -473,10 +473,11 @@
     "output_rate": "8.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.60000000",
-    "output_cu_rate": "2.40000000"
+    "output_cu_rate": "2.40000000",
+    "cache_read_rate": "0.50000000"
   },
   {
     "model_tag": "gpt-4.1-mini",
@@ -486,10 +487,11 @@
     "output_rate": "1.60000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.12000000",
-    "output_cu_rate": "0.48000000"
+    "output_cu_rate": "0.48000000",
+    "cache_read_rate": "0.10000000"
   },
   {
     "model_tag": "gpt-4.1-nano",
@@ -499,10 +501,11 @@
     "output_rate": "0.40000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.03000000",
-    "output_cu_rate": "0.12000000"
+    "output_cu_rate": "0.12000000",
+    "cache_read_rate": "0.02500000"
   },
   {
     "model_tag": "gpt-4o",
@@ -512,10 +515,11 @@
     "output_rate": "10.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.75000000",
-    "output_cu_rate": "3.00000000"
+    "output_cu_rate": "3.00000000",
+    "cache_read_rate": "1.25000000"
   },
   {
     "model_tag": "gpt-4o-mini",
@@ -525,10 +529,11 @@
     "output_rate": "0.60000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.04500000",
-    "output_cu_rate": "0.18000000"
+    "output_cu_rate": "0.18000000",
+    "cache_read_rate": "0.07500000"
   },
   {
     "model_tag": "gpt-4o-mini-transcribe",
@@ -612,27 +617,27 @@
     "model_tag": "gpt-5-pro",
     "operation": "chat",
     "tier": "premium",
-    "input_rate": "5.00000000",
-    "output_rate": "40.00000000",
+    "input_rate": "15.00000000",
+    "output_rate": "120.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "1.50000000",
-    "output_cu_rate": "12.00000000"
+    "input_cu_rate": "4.50000000",
+    "output_cu_rate": "36.00000000"
   },
   {
     "model_tag": "gpt-5.1",
     "operation": "chat",
     "tier": "premium",
-    "input_rate": "1.50000000",
-    "output_rate": "12.00000000",
+    "input_rate": "1.25000000",
+    "output_rate": "10.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-01-26",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "0.45000000",
-    "output_cu_rate": "3.60000000"
+    "input_cu_rate": "0.37500000",
+    "output_cu_rate": "3.00000000"
   },
   {
     "model_tag": "gpt-5.1-codex",
@@ -707,62 +712,74 @@
     "output_rate": "15.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-03-06",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
     "input_cu_rate": "0.75000000",
-    "output_cu_rate": "4.50000000"
+    "output_cu_rate": "4.50000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "5.00000000",
+    "long_output_rate": "22.50000000",
+    "long_cache_read_rate": "0.50000000"
   },
   {
     "model_tag": "gpt-5.4-mini",
     "operation": "chat",
     "tier": "standard",
-    "input_rate": "0.25000000",
-    "output_rate": "2.00000000",
+    "input_rate": "0.75000000",
+    "output_rate": "4.50000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-06-21",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "0.07500000",
-    "output_cu_rate": "0.60000000"
+    "input_cu_rate": "0.22500000",
+    "output_cu_rate": "1.35000000"
   },
   {
     "model_tag": "gpt-5.4-nano",
     "operation": "chat",
     "tier": "economy",
-    "input_rate": "0.05000000",
-    "output_rate": "0.40000000",
+    "input_rate": "0.20000000",
+    "output_rate": "1.25000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-06-21",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "0.01500000",
-    "output_cu_rate": "0.12000000"
+    "input_cu_rate": "0.06000000",
+    "output_cu_rate": "0.37500000"
   },
   {
     "model_tag": "gpt-5.5",
     "operation": "chat",
     "tier": "premium",
-    "input_rate": "2.50000000",
-    "output_rate": "15.00000000",
+    "input_rate": "5.00000000",
+    "output_rate": "30.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-06-21",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "0.75000000",
-    "output_cu_rate": "4.50000000"
+    "input_cu_rate": "1.50000000",
+    "output_cu_rate": "9.00000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "10.00000000",
+    "long_output_rate": "45.00000000",
+    "long_cache_read_rate": "1.00000000"
   },
   {
     "model_tag": "gpt-5.5-pro",
     "operation": "chat",
     "tier": "premium",
-    "input_rate": "21.00000000",
-    "output_rate": "168.00000000",
+    "input_rate": "30.00000000",
+    "output_rate": "180.00000000",
     "rate_unit": "per_1m_tokens",
     "markup_multiplier": "1.00",
-    "effective_date": "2026-06-21",
+    "effective_date": "2026-10-01",
     "cu_to_dollar": "10.00",
-    "input_cu_rate": "6.30000000",
-    "output_cu_rate": "50.40000000"
+    "input_cu_rate": "9.00000000",
+    "output_cu_rate": "54.00000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "60.00000000",
+    "long_output_rate": "270.00000000",
+    "long_cache_read_rate": null
   },
   {
     "model_tag": "gpt-5.6-luna",

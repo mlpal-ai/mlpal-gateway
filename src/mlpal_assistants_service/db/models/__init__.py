@@ -5,6 +5,7 @@ The api_keys and usage_logs tables reference user_id as an integer FK to the
 external users table, but without database-level FK constraints for schema flexibility.
 """
 
+from mlpal_assistants_service.db.models.abuse_event import ABUSE_ACTIONS, AbuseEvent
 from mlpal_assistants_service.db.models.api_key import APIKey
 from mlpal_assistants_service.db.models.base import Base
 from mlpal_assistants_service.db.models.connections import TenantConnection, TenantModel
@@ -31,6 +32,8 @@ from mlpal_assistants_service.db.models.user_credits import (
 from mlpal_assistants_service.db.models.user_suspension import UserSuspension
 
 __all__ = [
+    "ABUSE_ACTIONS",
+    "AbuseEvent",
     "TenantConnection",
     "TenantModel",
     "FeedInstall",

@@ -21,6 +21,7 @@ from mlpal_assistants_service.core.exceptions import ModelNotFoundError
 from mlpal_assistants_service.core.security import generate_trace_id
 from mlpal_assistants_service.repositories import UsageRepository
 from mlpal_assistants_service.seams.billing import build_billing_gate
+from mlpal_assistants_service.services.account_trust import AccountTrustService
 from mlpal_assistants_service.services.messages_v2.core import (
     ALLOWLIST_WILDCARD,
     SERVED_PROVIDERS,
@@ -90,7 +91,9 @@ async def create_messages_v2(
         pricing_service,
         build_billing_gate(session, redis),
         rate_limiter=RateLimiter(redis) if redis else None,
-        policy=PolicyService(redis, UsageRepository(session)),
+        policy=PolicyService(
+            redis, UsageRepository(session), trust=AccountTrustService(session, redis)
+        ),
     )
     surface = surface_for_path(request.url.path)
     return await core.handle(req, api_key, request.headers, generate_trace_id(), surface=surface)
