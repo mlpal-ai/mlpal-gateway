@@ -21,6 +21,7 @@ from mlpal_assistants_service.services.reasoning_effort import (
 
 ASTRA = {"effort_levels": ["low", "medium", "high", "xhigh", "max"], "default_effort": "medium"}
 OPUS46 = {"effort_levels": ["none", "low", "medium", "high", "max"], "default_effort": "high"}
+SONNET55 = {"effort_levels": ["none", "low", "medium", "high", "xhigh", "max"], "default_effort": "high"}
 GEMINI38 = {"effort_levels": ["low", "medium", "high"], "default_effort": "high"}
 PRO = {"effort_levels": ["medium", "high", "xhigh"]}
 NO_LEVER = {"tools": True}
@@ -84,12 +85,44 @@ def test_chat_schema_accepts_ladder_and_rejects_provider_spellings():
 # --- provider mappings -------------------------------------------------------
 
 def test_anthropic_none_disables_thinking_and_rungs_ride_output_config():
-    p: dict = {}
+    p: dict = {"model": "claude-opus-4-6"}
     _apply_effort(p, "none")
-    assert p == {"thinking": {"type": "disabled"}}
-    p = {"output_config": {"format": "json"}}
+    assert p == {"model": "claude-opus-4-6", "thinking": {"type": "disabled"}}
+    p = {"model": "claude-opus-4-6", "output_config": {"format": "json"}}
     _apply_effort(p, "xhigh")
     assert p["output_config"] == {"format": "json", "effort": "xhigh"}
+
+
+def test_sonnet_5_5_none_is_between_tools_on_every_backend_spelling():
+    """Probe-verified 2026-10-05: sonnet-5-5 returns 400 for `disabled` and
+    wants `between_tools`; opus-5-5 is the reverse (no off switch at all)."""
+    from mlpal_assistants_service.adapters.anthropic import thinking_off
+
+    for spelling in ("claude-sonnet-5-5", "global.anthropic.claude-sonnet-5-5",
+                     "anthropic.claude-sonnet-5-5", "claude-sonnet-5-5@20260928"):
+        assert thinking_off(spelling) == {"type": "between_tools"}, spelling
+        p = {"model": spelling}
+        _apply_effort(p, "none")
+        assert p["thinking"] == {"type": "between_tools"}
+    for other in ("claude-sonnet-5", "claude-opus-5-5", "claude-opus-4-6", "claude-haiku-4-5-20251001"):
+        assert thinking_off(other) == {"type": "disabled"}, other
+
+
+def test_5_5_generation_structured_output_uses_native_format_not_forced_tool():
+    """The 5.5 generation 400s on tool_choice type tool/any, so json_schema
+    rides output_config.format; older Claude keeps the forced-tool trick."""
+    from mlpal_assistants_service.adapters.anthropic import _apply_json_schema
+
+    spec = {"name": "person", "schema": {"type": "object", "properties": {"n": {"type": "string"}}}}
+    for m in ("claude-sonnet-5-5", "global.anthropic.claude-opus-5-5"):
+        p = {"model": m, "output_config": {"effort": "low"}}
+        assert _apply_json_schema(p, spec) is None
+        assert p["output_config"] == {"effort": "low", "format": {"type": "json_schema", "schema": spec["schema"]}}
+        assert "tool_choice" not in p and "tools" not in p
+    p = {"model": "claude-sonnet-5", "tools": [{"name": "t"}]}
+    assert _apply_json_schema(p, spec) == "person"
+    assert p["tool_choice"] == {"type": "tool", "name": "person"}
+    assert [t["name"] for t in p["tools"]] == ["t", "person"]
     p = {}
     _apply_effort(p, None)
     assert p == {}
@@ -164,7 +197,8 @@ def test_anthropic_usage_surfaces_thinking_tokens_when_reported():
 def _ctx(caps, **meta):
     from mlpal_assistants_service.services.messages_v2.edges import RequestContext
 
-    ctx = RequestContext(model_tag="m", provider="anthropic", provider_model_id="m", backend="first_party",
+    model = "claude-sonnet-5-5" if caps is SONNET55 else "m"
+    ctx = RequestContext(model_tag=model, provider="anthropic", provider_model_id=model, backend="first_party",
                          trace_id="t", api_key=None, headers={}, capabilities=caps)
     ctx.cc_metadata.update(meta)
     return ctx
@@ -202,6 +236,10 @@ def test_native_edge_rewrites_only_explicit_out_of_vocabulary_effort():
     body = {"output_config": {"effort": "none"}}
     _apply_resolved_effort(body, _ctx(OPUS46, reasoning_effort={"requested": "none", "applied": "none", "clamped": False, "source": "explicit"}))
     assert body == {"thinking": {"type": "disabled"}}
+    # same lever on sonnet-5-5 → its own off switch
+    body = {"output_config": {"effort": "none"}}
+    _apply_resolved_effort(body, _ctx(SONNET55, reasoning_effort={"requested": "none", "applied": "none", "clamped": False, "source": "explicit"}))
+    assert body == {"thinking": {"type": "between_tools"}}
     # clamped rung → applied rung, other output_config keys kept
     body = {"output_config": {"effort": "xhigh", "format": "json"}}
     _apply_resolved_effort(body, _ctx(OPUS46, reasoning_effort={"requested": "xhigh", "applied": "high", "clamped": True, "source": "explicit"}))

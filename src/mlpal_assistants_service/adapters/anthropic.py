@@ -40,16 +40,78 @@ from mlpal_assistants_service.seams.egress_guard import EndpointRejected
 logger = logging.getLogger(__name__)
 
 
+def canonical_model_id(model: str) -> str:
+    """Strip cloud-backend decoration so per-model rules match the same Claude
+    everywhere: Bedrock inference profiles look like
+    `global.anthropic.claude-opus-5` / `us.anthropic.claude-…-v1:0`, Vertex like
+    `claude-opus-5@20260801`. Returns the bare `claude-…` id."""
+    m = model
+    if ".anthropic." in m:
+        m = m.split(".anthropic.", 1)[1]
+    elif m.startswith("anthropic."):
+        m = m[len("anthropic."):]
+    return m.split("@", 1)[0]
+
+
+def _matches(model: str, prefixes: tuple[str, ...]) -> bool:
+    m = canonical_model_id(model)
+    return any(m.startswith(p) for p in prefixes)
+
+
+# Probe-verified 2026-10-05 against the live API. Sonnet 5.5 rejects
+# `thinking: disabled` (400 pointing at `between_tools`, its lowest setting,
+# accepted at effort high or below); Opus 5.5 rejects `between_tools` and has
+# no off switch at all (hence no `none` rung in its catalog row).
+_THINKING_OFF_VIA_BETWEEN_TOOLS = ("claude-sonnet-5-5",)
+
+# The 5.5 generation returns 400 for forced tool use (`tool_choice` type
+# `tool`/`any`), so structured output cannot ride the forced-tool trick; it
+# uses Anthropic's native `output_config.format` instead (probe-verified on
+# sonnet-5-5 and opus-5-5; the older `output_format` field is deprecated).
+_NO_FORCED_TOOL_CHOICE_PREFIXES = ("claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def thinking_off(model: str) -> dict[str, str]:
+    """The `thinking` payload that turns up-front thinking off on this model."""
+    if _matches(model, _THINKING_OFF_VIA_BETWEEN_TOOLS):
+        return {"type": "between_tools"}
+    return {"type": "disabled"}
+
+
+def rejects_forced_tool_choice(model: str) -> bool:
+    return _matches(model, _NO_FORCED_TOOL_CHOICE_PREFIXES)
+
+
 def _apply_effort(params: dict[str, Any], reasoning_effort: str | None) -> None:
     """Universal effort → Anthropic knobs. `none` means what the client said:
-    no thinking at all. Other rungs ride `output_config.effort` (the resolver
+    no up-front thinking. Other rungs ride `output_config.effort` (the resolver
     only hands us rungs this model accepts)."""
     if not reasoning_effort:
         return
     if reasoning_effort == "none":
-        params["thinking"] = {"type": "disabled"}
+        params["thinking"] = thinking_off(params["model"])
         return
     params["output_config"] = {**params.get("output_config", {}), "effort": reasoning_effort}
+
+
+def _apply_json_schema(params: dict[str, Any], schema_spec: dict[str, Any]) -> str | None:
+    """Request schema-conforming output. Returns the name of the synthetic tool
+    whose input carries the JSON, or None when the model fills a plain text
+    block via native structured output instead."""
+    if rejects_forced_tool_choice(params["model"]):
+        params["output_config"] = {
+            **params.get("output_config", {}),
+            "format": {"type": "json_schema", "schema": schema_spec.get("schema", {})},
+        }
+        return None
+    name = schema_spec.get("name", "structured_output")
+    params.setdefault("tools", []).append({
+        "name": name,
+        "description": f"Return response in {name} format. Always use this tool.",
+        "input_schema": schema_spec.get("schema", {}),
+    })
+    params["tool_choice"] = {"type": "tool", "name": name}
+    return name
 
 
 def _append_system_text(system: str | list | None, text: str) -> str | list:
@@ -99,24 +161,12 @@ class AnthropicAdapter(BaseAdapter):
         "claude-mythos-5",
     )
 
-    @staticmethod
-    def canonical_model_id(model: str) -> str:
-        """Strip cloud-backend decoration so per-model rules match the same
-        Claude everywhere: Bedrock inference profiles look like
-        `global.anthropic.claude-opus-5` / `us.anthropic.claude-…-v1:0`,
-        Vertex like `claude-opus-5@20260801`. Returns the bare `claude-…` id."""
-        m = model
-        if ".anthropic." in m:
-            m = m.split(".anthropic.", 1)[1]
-        elif m.startswith("anthropic."):
-            m = m[len("anthropic."):]
-        return m.split("@", 1)[0]
+    canonical_model_id = staticmethod(canonical_model_id)
 
     def _skips_temperature(self, model: str) -> bool:
         """Whether this model rejects the `temperature` parameter (Bedrock
         returns 400 "`temperature` is deprecated for this model")."""
-        m = self.canonical_model_id(model)
-        return any(m.startswith(p) for p in self._NO_TEMPERATURE_PREFIXES)
+        return _matches(model, self._NO_TEMPERATURE_PREFIXES)
 
     # Model capabilities registry
     MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
@@ -424,17 +474,7 @@ class AnthropicAdapter(BaseAdapter):
             if response_format:
                 fmt_type = response_format.get("type")
                 if fmt_type == "json_schema":
-                    schema_spec = response_format.get("json_schema", {})
-                    _structured_tool_name = schema_spec.get("name", "structured_output")
-                    structured_tool = {
-                        "name": _structured_tool_name,
-                        "description": f"Return response in {_structured_tool_name} format. Always use this tool.",
-                        "input_schema": schema_spec.get("schema", {}),
-                    }
-                    if "tools" not in params:
-                        params["tools"] = []
-                    params["tools"].append(structured_tool)
-                    params["tool_choice"] = {"type": "tool", "name": _structured_tool_name}
+                    _structured_tool_name = _apply_json_schema(params, response_format.get("json_schema", {}))
                 elif fmt_type == "json_object":
                     # For json_object, prepend instruction to system message
                     sys_msgs = [m for m in params.get("messages", []) if m.get("role") == "system"]
@@ -628,17 +668,7 @@ class AnthropicAdapter(BaseAdapter):
             if response_format:
                 fmt_type = response_format.get("type")
                 if fmt_type == "json_schema":
-                    schema_spec = response_format.get("json_schema", {})
-                    structured_tool_name = schema_spec.get("name", "structured_output")
-                    structured_tool = {
-                        "name": structured_tool_name,
-                        "description": f"Return response in {structured_tool_name} format. Always use this tool.",
-                        "input_schema": schema_spec.get("schema", {}),
-                    }
-                    if "tools" not in params:
-                        params["tools"] = []
-                    params["tools"].append(structured_tool)
-                    params["tool_choice"] = {"type": "tool", "name": structured_tool_name}
+                    _apply_json_schema(params, response_format.get("json_schema", {}))
                 elif fmt_type == "json_object":
                     sys_msgs = [m for m in params.get("messages", []) if m.get("role") == "system"]
                     if not sys_msgs:

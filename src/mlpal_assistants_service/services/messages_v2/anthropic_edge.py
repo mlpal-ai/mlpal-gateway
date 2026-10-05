@@ -19,6 +19,7 @@ from typing import Any
 
 import httpx
 
+from mlpal_assistants_service.adapters.anthropic import thinking_off
 from mlpal_assistants_service.services.bedrock_mantle import (
     parse_non_streaming_usage,
     parse_sse_event,
@@ -79,8 +80,8 @@ def _as_stream_error(raw: bytes, status_code: int) -> bytes:
 def _apply_resolved_effort(body: dict[str, Any], ctx: RequestContext) -> None:
     """Native wire: the body is Anthropic-shaped already, so only an EXPLICIT
     `output_config.effort` outside Anthropic's own vocabulary needs rewriting
-    (a pure `thinking` budget is left to Anthropic). `none` → thinking
-    disabled (the resolver only yields it for models that accept it); a
+    (a pure `thinking` budget is left to Anthropic). `none` → this model's
+    thinking-off payload (the resolver only yields it for models that have one); a
     clamped rung → the applied rung; no lever → the field is dropped rather
     than bounced by the provider."""
     res = ctx.cc_metadata.get("reasoning_effort")
@@ -90,7 +91,7 @@ def _apply_resolved_effort(body: dict[str, Any], ctx: RequestContext) -> None:
     applied = res.get("applied")
     if applied == "none":
         oc.pop("effort", None)
-        body["thinking"] = {"type": "disabled"}
+        body["thinking"] = thinking_off(ctx.provider_model_id)
     elif applied is None:
         oc.pop("effort", None)
     else:

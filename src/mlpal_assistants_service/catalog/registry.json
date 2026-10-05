@@ -338,7 +338,7 @@
     "provider": "anthropic",
     "provider_model_id": "claude-sonnet-5-5",
     "display_name": "Claude Sonnet 5.5",
-    "description": "Anthropic Sonnet 5.5 (2026-09-28): best speed/intelligence balance at $2/$10, cache reads $0.20; adaptive thinking (cannot be disabled), default effort high; 1M context, 128K output",
+    "description": "Anthropic Sonnet 5.5 (2026-09-28): best speed/intelligence balance at $2/$10, cache reads $0.20; adaptive thinking, default effort high, `none` = between_tools; 1M context, 128K output",
     "capabilities": {
       "pdf": true,
       "audio": false,
@@ -347,6 +347,7 @@
       "operation": "chat",
       "streaming": true,
       "effort_levels": [
+        "none",
         "low",
         "medium",
         "high",
