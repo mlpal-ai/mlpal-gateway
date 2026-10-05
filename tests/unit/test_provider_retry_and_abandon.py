@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
+from tests.unit.test_backend_failover import bedrock_first  # noqa: F401 — fixture
 
 from mlpal_assistants_service.adapters import retry
 from mlpal_assistants_service.adapters.anthropic import AnthropicAdapter
@@ -43,7 +44,6 @@ from mlpal_assistants_service.services.messages_v2.anthropic_edge import Anthrop
 from mlpal_assistants_service.services.messages_v2.core import MessagesV2Core
 from mlpal_assistants_service.services.messages_v2.edges import RequestContext
 from mlpal_assistants_service.services.messages_v2.schemas import validate
-from tests.unit.test_backend_failover import bedrock_first  # noqa: F401 — fixture
 
 
 # -- SDK-shaped exceptions (classified by name / attributes, like the real ones)

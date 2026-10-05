@@ -14,13 +14,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from tests.unit.test_policy import FakeRedis
 
 from mlpal_assistants_service.core.exceptions import AccountHeldError, BudgetExceededError
 from mlpal_assistants_service.services import account_trust as at
 from mlpal_assistants_service.services.account_trust import AccountTrust, AccountTrustService
 from mlpal_assistants_service.services.api_key import APIKeyService, default_key_budgets
 from mlpal_assistants_service.services.policy import PolicyService
-from tests.unit.test_policy import FakeRedis
 
 SETTINGS = SimpleNamespace(
     young_account_ramp_enabled=True,
