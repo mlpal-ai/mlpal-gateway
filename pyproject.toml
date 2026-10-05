@@ -1,6 +1,6 @@
 [project]
 name = "mlpal-gateway"
-version = "0.2.5"
+version = "0.2.6"
 description = "MLPal Gateway — curated, self-hostable AI gateway (Anthropic-wire core, router tags, CU metering, admin console)"
 readme = "README.md"
 requires-python = ">=3.11"

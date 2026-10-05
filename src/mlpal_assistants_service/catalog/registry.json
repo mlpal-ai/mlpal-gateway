@@ -334,6 +334,39 @@
     "pause_reason": null
   },
   {
+    "model_tag": "claude-sonnet-5-5",
+    "provider": "anthropic",
+    "provider_model_id": "claude-sonnet-5-5",
+    "display_name": "Claude Sonnet 5.5",
+    "description": "Anthropic Sonnet 5.5 (2026-09-28): best speed/intelligence balance at $2/$10, cache reads $0.20; adaptive thinking (cannot be disabled), default effort high; 1M context, 128K output",
+    "capabilities": {
+      "pdf": true,
+      "audio": false,
+      "tools": true,
+      "vision": true,
+      "operation": "chat",
+      "streaming": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default_effort": "high"
+    },
+    "context_length": 1000000,
+    "max_output_tokens": 128000,
+    "pricing_tier": "premium",
+    "fallback_model_tag": null,
+    "priority": 0,
+    "is_active": true,
+    "is_deprecated": false,
+    "deprecation_message": null,
+    "is_paused": false,
+    "pause_reason": null
+  },
+  {
     "model_tag": "claude-opus-5",
     "provider": "anthropic",
     "provider_model_id": "claude-opus-5",

@@ -1,6 +1,6 @@
 {
   "schema": 3,
-  "updated": "2026-09-24",
+  "updated": "2026-10-05",
   "_note": "Declared, deterministic curation only. Objective axes (cost, context, caps, throughput) merge live and are never here. THREE declared blocks: (1) `lineage` = (provider, generation, tier, tier_rank) — structural, stable, placed once per model; powers deterministic 'provider best' resolution and same-tier version ordering. tier_rank is 1=flagship WITHIN a provider (not cross-provider). (2) `cards` = the deterministic model card: a short `summary` + published `benchmarks` (sourced + dated). The card is NEVER mutated by feedback. (3) MEASURED quality (the feedback loop, see model_feedback) is served ORTHOGONALLY as `measured`, alongside — never merged into — the card. A model absent here is still fully routable on the objective axes.",
 
   "lineage": {
@@ -13,6 +13,7 @@
     "claude-opus-4-5-20251101":    {"generation": 4.5, "tier": "opus",   "tier_rank": 2},
     "claude-opus-4-1-20250805":    {"generation": 4.1, "tier": "opus",   "tier_rank": 2},
     "claude-opus-4-20250514":      {"generation": 4.0, "tier": "opus",   "tier_rank": 2},
+    "claude-sonnet-5-5":           {"generation": 5.5, "tier": "sonnet", "tier_rank": 3},
     "claude-sonnet-5":             {"generation": 5.0, "tier": "sonnet", "tier_rank": 3},
     "claude-sonnet-4-6":           {"generation": 4.6, "tier": "sonnet", "tier_rank": 3},
     "claude-sonnet-4-5-20250929":  {"generation": 4.5, "tier": "sonnet", "tier_rank": 3},
@@ -55,6 +56,9 @@
   "cards": {
     "claude-opus-5-5": {
       "summary": "Anthropic Opus 5.5 (2026-09-21) — Fable-5.1-class quality at Opus-minus pricing: $4/$20 (20% below Opus 5), cache reads $0.20 (0.05x), output >30% faster. Launch-coverage table: Terminal-Bench 4.0 66.4 (Astra 57.9, Fable 5.1 55.8), FrontierCode v1.1 54.4, CursorBench 4.0 57.8, HLE 67.7 (tools), OSWorld 2.0 81.8 partial. 1M context, 128K output; effort low/medium/high/xhigh/max (thinking always on, no none); rejects temperature and forced tool_choice (any/tool). (No SWE-bench Verified / GPQA figure published.)"
+    },
+    "claude-sonnet-5-5": {
+      "summary": "Anthropic Sonnet 5.5 (2026-09-28) — the speed/intelligence balance of the 5.5 generation at $2/$10, cache reads $0.20 (0.10x), 5m/1h cache writes $2.50/$4. 1M context, 128K output; adaptive thinking that cannot be disabled (lowest setting is between_tools), default effort high, effort ladder low..max; rejects temperature/top_p/top_k and forced tool_choice (tool/any); 512-token minimum cacheable prompt; Bedrock global.anthropic.claude-sonnet-5-5. Catalog facts from Anthropic's model page; not yet probe-verified from the gateway (Bedrock runtime blocked, no live first-party key at onboarding)."
     },
     "claude-opus-5": {
       "summary": "Anthropic Opus-tier flagship (supersedes Opus 4.8 at the same $5/$25 price); approaches Fable 5. Leads on repo-level coding (SWE-bench Verified ~96) and reasoning (GPQA Diamond 94.1); wins Frontier-Bench v0.1. 1M context, 128k output."
@@ -140,7 +144,7 @@
         },
         "mid": {
           "model": "gpt-6-sol",
-          "alternates": ["gpt-5.6-terra", "claude-sonnet-5"],
+          "alternates": ["gpt-5.6-terra", "claude-sonnet-5-5", "claude-sonnet-5"],
           "good_for": "most implementation, moderate reasoning, everyday agent work"
         },
         "cheap": {

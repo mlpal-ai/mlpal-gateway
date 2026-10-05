@@ -137,6 +137,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # whatever clouds it has. Building them here also warms the factory's
     # backend caches before traffic arrives.
     app.state.adapters = get_adapter_factory().get_enabled()
+    if not app.state.adapters:
+        # A self-hosted box with an empty/misspelled key boots "healthy" and
+        # serves an empty /v1/models; say so where the operator is looking.
+        logger.warning(
+            "No provider configured — set at least one of OPENAI_API_KEY, "
+            "ANTHROPIC_API_KEY, GOOGLE_API_KEY, or a cloud backend "
+            "(MLPAL_<FAMILY>_BACKENDS); /v1/models will be empty until then"
+        )
     logger.info(
         "Provider adapters initialized",
         providers={p: a.backend_name for p, a in app.state.adapters.items()},

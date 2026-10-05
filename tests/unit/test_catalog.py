@@ -26,6 +26,7 @@ RATES = {
     "gpt-6-luna": ("openai", "0.10", "0.50"),         # blended  0.200
     "gpt-6-astra": ("openai", "10", "50"),             # blended 11.250
     "gpt-5.6-terra": ("openai", "2.50", "15"),        # blended  5.625
+    "claude-sonnet-5-5": ("anthropic", "2", "10"),    # blended  4.000
     "claude-sonnet-5": ("anthropic", "3", "15"),      # blended  6.000
     "gpt-5.5": ("openai", "2.50", "15"),
     "gpt-5.6-luna": ("openai", "1", "6"),             # blended  2.250
