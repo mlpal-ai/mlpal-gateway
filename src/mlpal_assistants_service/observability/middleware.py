@@ -24,6 +24,7 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from mlpal_assistants_service.core.metrics import get_metrics
 from mlpal_assistants_service.observability.client import bind_client_context
+from mlpal_assistants_service.services.attribution import bind_harness_attribution
 
 _MODEL_RE = re.compile(rb'"model"\s*:\s*"([^"]{1,128})"')
 _SKIP_PATHS = ("/", "/docs", "/redoc", "/openapi.json")
@@ -59,6 +60,7 @@ class ObservabilityMiddleware:
             await self.app(scope, receive, send)
             return
         bind_client_context(scope)
+        bind_harness_attribution(scope.get("headers") or [])
         path = scope["path"]
         method = scope["method"]
         if method == "OPTIONS" or path.startswith("/health") or path in _SKIP_PATHS:

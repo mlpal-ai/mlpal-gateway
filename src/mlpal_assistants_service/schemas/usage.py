@@ -87,3 +87,24 @@ class DailyUsageResponse(BaseSchema):
         default_factory=list,
         description="Days with at least one logged request",
     )
+
+
+class AttributedUsageRecord(UsageRecord):
+    """A usage row plus the harness attribution it carried (session, run,
+    prompt, parent run, hop, origin, workspace, harness trace/span ids)."""
+
+    attribution: dict[str, str] = Field(default_factory=dict, description="Validated harness attribution fields")
+    cache_read_input_tokens: int = Field(default=0, description="Cache-read tokens (subset of input_tokens)")
+
+
+class AttributedUsageResponse(BaseSchema):
+    """GET /v1/usage?session_id=…|run_id=…: one call for cost per
+    conversation (session) or per turn (run)."""
+
+    filter: dict[str, str] = Field(..., description="The attribution filter applied, e.g. {\"run_id\": \"…\"}")
+    items: list[AttributedUsageRecord] = Field(..., description="Matching rows, newest first")
+    total_requests: int = Field(..., description="Rows returned")
+    total_compute_units: float = Field(..., description="Sum of compute_units over the returned rows")
+    total_input_tokens: int = Field(..., description="Sum of input_tokens (includes cache reads)")
+    total_output_tokens: int = Field(..., description="Sum of output_tokens")
+    truncated: bool = Field(..., description="True when more rows exist than `limit`")

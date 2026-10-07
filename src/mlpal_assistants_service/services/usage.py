@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mlpal_assistants_service.core.config import get_settings
 from mlpal_assistants_service.db.models import UsageLog
 from mlpal_assistants_service.observability.client import get_client_ip, get_client_ua_hash
+from mlpal_assistants_service.services.attribution import current_attribution
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +144,9 @@ class UsageService:
             "wallet_debit_status": wallet_debit_status,
             "wallet_debit_attempts": wallet_debit_attempts,
             "wallet_debit_error": wallet_debit_error,
-            "cc_metadata": cc_metadata,
+            # Harness attribution (traceparent/baggage) rides every row of the
+            # request on either wire; explicit cc_metadata keys win.
+            "cc_metadata": {**current_attribution(), **(cc_metadata or {})} or None,
             "client_ip": get_client_ip(),
             "client_ua_hash": get_client_ua_hash(),
             "timestamp": datetime.now(UTC).isoformat(),

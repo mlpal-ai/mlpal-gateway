@@ -7,11 +7,71 @@ from sqlalchemy import select
 
 from mlpal_assistants_service.api.deps import CurrentUserFlexible, UsageServiceDep
 from mlpal_assistants_service.db.models.usage_log import UsageLog
-from mlpal_assistants_service.schemas.usage import DailyUsageResponse, UsageSummary
+from mlpal_assistants_service.repositories.usage_repository import UsageRepository
+from mlpal_assistants_service.schemas.usage import (
+    AttributedUsageRecord,
+    AttributedUsageResponse,
+    DailyUsageResponse,
+    UsageSummary,
+)
+from mlpal_assistants_service.services.attribution import attribution_fields
 from mlpal_assistants_service.services.capture import fetch_payload
 from mlpal_assistants_service.services.traces import query_traces, window_from_days
 
 router = APIRouter()
+
+
+@router.get(
+    "",
+    response_model=AttributedUsageResponse,
+    summary="Usage by harness session or run",
+    description=(
+        "Rows and summed compute units for one harness session (`session_id`) "
+        "or one run (`run_id`), as carried on the request's W3C baggage "
+        "(mlpal.session / mlpal.run). Exactly one filter is required. Scoped to "
+        "the caller's own keys."
+    ),
+)
+async def get_usage_by_attribution(
+    user_id: CurrentUserFlexible,
+    usage_service: UsageServiceDep,
+    session_id: str | None = Query(default=None, max_length=64),
+    run_id: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> AttributedUsageResponse:
+    if (session_id is None) == (run_id is None):
+        raise HTTPException(status_code=400, detail="Pass exactly one of session_id or run_id")
+    field, value = ("session_id", session_id) if session_id is not None else ("run_id", run_id)
+    repo = UsageRepository(usage_service.session)
+    rows = await repo.get_user_usage_by_attribution(user_id, field, value, limit=limit + 1)
+    truncated = len(rows) > limit
+    rows = rows[:limit]
+    items = [
+        AttributedUsageRecord(
+            trace_id=r.trace_id,
+            model_tag=r.model_tag,
+            provider=r.provider,
+            operation=r.operation,
+            input_tokens=r.input_tokens,
+            output_tokens=r.output_tokens,
+            compute_units=float(r.compute_units),
+            latency_ms=r.latency_ms,
+            status=r.status,
+            created_at=r.created_at,
+            attribution=attribution_fields(r.cc_metadata),
+            cache_read_input_tokens=int((r.cc_metadata or {}).get("cache_read_input_tokens") or 0),
+        )
+        for r in rows
+    ]
+    return AttributedUsageResponse(
+        filter={field: value},
+        items=items,
+        total_requests=len(items),
+        total_compute_units=float(sum((r.compute_units for r in rows), start=0)),
+        total_input_tokens=sum(r.input_tokens for r in rows),
+        total_output_tokens=sum(r.output_tokens for r in rows),
+        truncated=truncated,
+    )
 
 
 @router.get(

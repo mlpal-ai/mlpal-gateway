@@ -45,6 +45,22 @@ class UsageRepository(BaseRepository[UsageLog]):
             error_code=error_code,
         )
 
+    async def get_user_usage_by_attribution(
+        self, user_id: int, field: str, value: str, limit: int = 200
+    ) -> list[UsageLog]:
+        """Rows this user's keys produced under one harness session or run
+        (cc_metadata containment, served by the GIN index). `field` is a
+        QUERYABLE_KEYS member; tenancy is the caller's user id, never the
+        attribution."""
+        stmt = (
+            select(UsageLog)
+            .where(UsageLog.user_id == user_id, UsageLog.cc_metadata.contains({field: value}))
+            .order_by(UsageLog.created_at.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
     async def get_by_trace_id(self, trace_id: str) -> UsageLog | None:
         """Get usage log by trace ID."""
         return await self.get_one(trace_id=trace_id)

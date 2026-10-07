@@ -39,6 +39,7 @@ from mlpal_assistants_service.core.exceptions import (
 )
 from mlpal_assistants_service.core.metrics import get_metrics
 from mlpal_assistants_service.seams.billing import build_billing_gate, is_insufficient_wallet_error
+from mlpal_assistants_service.services.attribution import current_attribution
 from mlpal_assistants_service.services.messages_v2.anthropic_backend import native_backend_for
 from mlpal_assistants_service.services.messages_v2.anthropic_edge import AnthropicEdge
 from mlpal_assistants_service.services.messages_v2.edges import (
@@ -1171,6 +1172,8 @@ def _usage_event_json(ctx: RequestContext, compute_units: Decimal) -> bytes:
             "cache_creation_input_tokens": u.cache_write if u else 0,
             **({"reasoning_tokens": u.reasoning} if u and u.reasoning is not None else {}),
         },
+        **({"harness_trace_id": ctx.cc_metadata["harness_trace_id"], "harness_span_id": ctx.cc_metadata["harness_span_id"]}
+           if ctx.cc_metadata.get("harness_trace_id") else {}),
         **({"serving_credentials": ctx.conn_kind} if ctx.conn_kind else {}),
         **({"connection_estimate": ctx.conn_estimate} if ctx.conn_estimate is not None else {}),
         **({"backend_fallback_from": ctx.cc_metadata["backend_fallback_from"]} if ctx.cc_metadata.get("backend_fallback_from") else {}),
@@ -1232,8 +1235,9 @@ def _conn_headers(ctx: RequestContext) -> dict[str, str]:
 
 
 def _cc_metadata(headers: Mapping[str, str], metadata: dict[str, Any]) -> dict[str, Any]:
-    """Claude-Code / Anthropic attribution signals for usage logs."""
+    """Claude-Code / Anthropic / harness attribution signals for usage logs."""
     return {
+        **current_attribution(),
         "cc_session_id": headers.get("x-claude-code-session-id"),
         "cc_agent_id": headers.get("x-claude-code-agent-id"),
         "cc_parent_agent_id": headers.get("x-claude-code-parent-agent-id"),
