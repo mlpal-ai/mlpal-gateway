@@ -34,6 +34,7 @@ RATES = {
     # Google flagship `pro` sits on an OLDER generation (3.1) than the newer
     # `flash` (3.5) — the edge case: rank must beat generation in flagship pick.
     "gemini-3.1-pro-preview": ("google", "1.25", "10"),
+    "claude-haiku-5-5": ("anthropic", "0.10", "0.50"),
     "claude-haiku-4-5-20251001": ("anthropic", "1", "5"),
     # Served but deliberately ABSENT from curated.json's models map — proves a
     # model needs no curation entry to be fully routable (schema-2 invariant).

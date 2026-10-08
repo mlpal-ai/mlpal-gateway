@@ -91,6 +91,40 @@
     "pause_reason": null
   },
   {
+    "model_tag": "claude-haiku-5-5",
+    "provider": "anthropic",
+    "provider_model_id": "claude-haiku-5-5",
+    "display_name": "Claude Haiku 5.5",
+    "description": "Anthropic Haiku 5.5 (2026-10-07): fastest tier for classification, extraction, routing and subagents; $0.10/$0.50 up to 100K-token prompts, $0.50/$2.50 above; adaptive thinking, default effort medium; 1M context, 128K output",
+    "capabilities": {
+      "pdf": true,
+      "audio": false,
+      "tools": true,
+      "vision": true,
+      "operation": "chat",
+      "streaming": true,
+      "effort_levels": [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default_effort": "medium"
+    },
+    "context_length": 1000000,
+    "max_output_tokens": 128000,
+    "pricing_tier": "economy",
+    "fallback_model_tag": null,
+    "priority": 0,
+    "is_active": true,
+    "is_deprecated": false,
+    "deprecation_message": null,
+    "is_paused": false,
+    "pause_reason": null
+  },
+  {
     "model_tag": "claude-haiku-4-5-20251001",
     "provider": "anthropic",
     "provider_model_id": "claude-haiku-4-5-20251001",
@@ -445,11 +479,11 @@
     "context_length": 200000,
     "max_output_tokens": 65536,
     "pricing_tier": "standard",
-    "fallback_model_tag": null,
+    "fallback_model_tag": "claude-sonnet-5-5",
     "priority": 1,
     "is_active": true,
-    "is_deprecated": false,
-    "deprecation_message": null,
+    "is_deprecated": true,
+    "deprecation_message": "Deprecated by Anthropic 2026-09-30; retires 2026-11-30. Use claude-sonnet-5-5.",
     "is_paused": false,
     "pause_reason": null
   },
