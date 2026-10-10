@@ -1593,6 +1593,8 @@ class OpenAIAdapter(BaseAdapter):
         # GPT-6 Astra: `temperature` rejected ("not supported with this
         # model"), verified live 2026-09-07.
         "gpt-6-astra", "gpt-6-sol", "gpt-6-luna",
+        # GPT-6.1 Sol (2026-10): same family rule, verified live 2026-10-09.
+        "gpt-6.1-sol",
     )
 
     _CLOUD_PREFIXES = ("global.openai.", "us.openai.", "openai.")

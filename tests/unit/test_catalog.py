@@ -22,6 +22,7 @@ RATES = {
     "claude-opus-5": ("anthropic", "5", "25"),        # blended 10.000
     "claude-opus-4-8": ("anthropic", "5", "25"),      # blended 10.000
     "gpt-5.6-sol": ("openai", "5", "30"),
+    "gpt-6.1-sol": ("openai", "2", "10"),             # blended  4.000
     "gpt-6-sol": ("openai", "2", "10"),               # blended  4.000
     "gpt-6-luna": ("openai", "0.10", "0.50"),         # blended  0.200
     "gpt-6-astra": ("openai", "10", "50"),             # blended 11.250
@@ -88,7 +89,7 @@ async def test_catalog_happy_path_rel_cost_and_alternates():
     assert list(t.keys()) == ["max", "frontier", "mid", "cheap"]
     assert t["max"]["model"] == "gpt-6-astra" and not t["max"]["served_alternate"]
     assert t["frontier"]["model"] == "claude-opus-5-5"
-    assert t["mid"]["model"] == "gpt-6-sol"
+    assert t["mid"]["model"] == "gpt-6.1-sol"
     assert t["cheap"]["model"] == "gpt-6-luna"
     # rel_cost normalized to max=100 from the blended 3:1 ledger rates
     assert t["max"]["rel_cost"] == 100

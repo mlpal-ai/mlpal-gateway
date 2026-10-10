@@ -1,6 +1,6 @@
 {
   "schema": 3,
-  "updated": "2026-10-08",
+  "updated": "2026-10-09",
   "_note": "Declared, deterministic curation only. Objective axes (cost, context, caps, throughput) merge live and are never here. THREE declared blocks: (1) `lineage` = (provider, generation, tier, tier_rank) — structural, stable, placed once per model; powers deterministic 'provider best' resolution and same-tier version ordering. tier_rank is 1=flagship WITHIN a provider (not cross-provider). (2) `cards` = the deterministic model card: a short `summary` + published `benchmarks` (sourced + dated). The card is NEVER mutated by feedback. (3) MEASURED quality (the feedback loop, see model_feedback) is served ORTHOGONALLY as `measured`, alongside — never merged into — the card. A model absent here is still fully routable on the objective axes.",
 
   "lineage": {
@@ -23,6 +23,7 @@
     "claude-3-5-haiku-20241022":   {"generation": 3.5, "tier": "haiku",  "tier_rank": 4},
 
     "gpt-6-astra":                 {"generation": 6.0, "tier": "astra",  "tier_rank": 1},
+    "gpt-6.1-sol":                 {"generation": 6.1, "tier": "sol",    "tier_rank": 2},
     "gpt-6-sol":                   {"generation": 6.0, "tier": "sol",    "tier_rank": 2},
     "gpt-6-luna":                  {"generation": 6.0, "tier": "luna",   "tier_rank": 3},
     "gpt-5.6-sol":                 {"generation": 5.6, "tier": "sol",    "tier_rank": 1},
@@ -94,6 +95,9 @@
     "gpt-6-astra": {
       "summary": "OpenAI GPT-6 Astra — frontier generation (2026-09-03). OpenAI launch-post table: Terminal-Bench 4.0 57.9 (Fable 5.1 55.8, Opus 5 52.6, Sol 37.3), DeepSWE v1.1 74.1 (Opus 5 73.7, Sol 72.7), GPQA Diamond 96.0, FrontierMath Tier 4 (v2) 97.6, MRCR v2 8-needle 512K-1M 96.3. 1.05M context, 128K output; reasoning effort low/medium/high/xhigh/max (no 'none'); rejects temperature. $10/$50, cache read $1.00, cache write $12.50 (1.25x). (No SWE-bench Verified figure published.)"
     },
+    "gpt-6.1-sol": {
+      "summary": "OpenAI GPT-6.1 Sol (2026-10) — the daily model for software development and multistep agent work, \"near-Astra performance\" at $2/$10 with cache reads at $0.10 (half of GPT-6 Sol); 1.05M context, 128K output; effort low..max default medium, none/minimal rejected; rejects temperature; tools, structured output, vision; long-context tier above 272K input ($4/$15). Bedrock global.openai.gpt-6.1-sol. No vendor benchmark table at onboarding."
+    },
     "gpt-6-sol": {
       "summary": "OpenAI GPT-6 Sol (2026-09-22) — the daily model for software development and multistep agent work, derived from Astra; OpenAI: roughly half the factuality mistakes of GPT-5.6 Sol. $2/$10 (50% below GPT-5.6 Sol), cache read $0.20, write $2.50 (1.25x). 1M context, 128K output; effort none/low/medium/high/xhigh/max; rejects temperature. (No public benchmark table at launch.)"
     },
@@ -143,12 +147,12 @@
         },
         "frontier": {
           "model": "claude-opus-5-5",
-          "alternates": ["claude-opus-5", "gpt-6-astra", "gpt-6-sol", "claude-fable-5"],
+          "alternates": ["claude-opus-5", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "claude-fable-5"],
           "good_for": "hard bounded coding + reasoning subtasks - Fable-class quality (leads Terminal-Bench/FrontierCode) at the lowest frontier cost; gpt-6-sol alternate for terminal long-horizon / max throughput"
         },
         "mid": {
-          "model": "gpt-6-sol",
-          "alternates": ["gpt-5.6-terra", "claude-sonnet-5-5", "claude-sonnet-5"],
+          "model": "gpt-6.1-sol",
+          "alternates": ["gpt-6-sol", "gpt-5.6-terra", "claude-sonnet-5-5", "claude-sonnet-5"],
           "good_for": "most implementation, moderate reasoning, everyday agent work"
         },
         "cheap": {

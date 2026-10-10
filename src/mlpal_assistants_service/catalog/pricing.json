@@ -349,6 +349,19 @@
     "output_cu_rate": "3.60000000"
   },
   {
+    "model_tag": "gemini-nano-banana-2.1",
+    "operation": "image_generation",
+    "tier": "premium",
+    "input_rate": "0.03360000",
+    "output_rate": "0.03360000",
+    "rate_unit": "per_image",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-10-06",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "0.01008000",
+    "output_cu_rate": "0.01008000"
+  },
+  {
     "model_tag": "gemini-3.1-flash-image",
     "operation": "image_generation",
     "tier": "premium",
@@ -845,6 +858,24 @@
     "long_input_rate": "20.00000000",
     "long_output_rate": "75.00000000",
     "long_cache_read_rate": "2.00000000"
+  },
+  {
+    "model_tag": "gpt-6.1-sol",
+    "operation": "chat",
+    "tier": "premium",
+    "input_rate": "2.00000000",
+    "output_rate": "10.00000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-10-08",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "0.60000000",
+    "output_cu_rate": "3.00000000",
+    "cache_read_rate": "0.10000000",
+    "long_context_threshold": 272000,
+    "long_input_rate": "4.00000000",
+    "long_output_rate": "15.00000000",
+    "long_cache_read_rate": "0.20000000"
   },
   {
     "model_tag": "gpt-6-sol",

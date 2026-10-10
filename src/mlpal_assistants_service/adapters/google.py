@@ -279,6 +279,7 @@ class GoogleAdapter(BaseAdapter):
         ),
         "gemini-3-pro-image-preview": _IMAGE_MODEL_CAPABILITIES,
         "gemini-3-pro-image": _IMAGE_MODEL_CAPABILITIES,
+        "gemini-nano-banana-2.1": _IMAGE_MODEL_CAPABILITIES,
         "gemini-3.1-flash-image": _IMAGE_MODEL_CAPABILITIES,
         "gemini-3.1-flash-lite-image": _IMAGE_MODEL_CAPABILITIES,
         # Gemini 2.5 family
@@ -1521,7 +1522,8 @@ class GoogleAdapter(BaseAdapter):
 
         Models (native Gemini image generation, all support reference images):
             - gemini-3-pro-image: highest quality, 1K/2K/4K
-            - gemini-3.1-flash-image: fast, 512px/1K/2K/4K
+            - gemini-nano-banana-2.1: fast, 1K/2K/4K (replaces 3.1-flash-image)
+            - gemini-3.1-flash-image: fast, 512px/1K/2K/4K (deprecated 2026-10-06)
             - gemini-3.1-flash-lite-image: cheapest, 1K only
         """
         import base64

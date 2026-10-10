@@ -64,7 +64,7 @@ async def generate_images(
       (hd/4K edits). Poll GET /v1/images/jobs/{id}.
 
     Models: gpt-image-2, gpt-image-1.5, gpt-image-1-mini, gemini-3-pro-image,
-    gemini-3.1-flash-image, gemini-3.1-flash-lite-image, or the router tags
+    gemini-nano-banana-2.1, gemini-3.1-flash-image (deprecated), gemini-3.1-flash-lite-image, or the router tags
     mlpal / mlpal-flash / mlpal-lite.
     """
     _require_images_permission(api_key)

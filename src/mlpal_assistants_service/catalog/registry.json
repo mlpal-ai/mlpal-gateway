@@ -856,11 +856,11 @@
     "pause_reason": null
   },
   {
-    "model_tag": "gemini-3.1-flash-image",
+    "model_tag": "gemini-nano-banana-2.1",
     "provider": "google",
-    "provider_model_id": "gemini-3.1-flash-image",
-    "display_name": "Gemini 3.1 Flash Image (Nano Banana 2)",
-    "description": "Fast Gemini image model; 512px/1K/2K/4K, up to 14 reference images",
+    "provider_model_id": "gemini-nano-banana-2.1",
+    "display_name": "Gemini Nano Banana 2.1",
+    "description": "Google's image generation and editing model (GA 2026-10-06, replaces Gemini 3.1 Flash Image); 1K/2K/4K, improved visual quality and multi-turn consistency",
     "capabilities": {
       "operation": "image_generation",
       "streaming": false
@@ -873,6 +873,27 @@
     "is_active": true,
     "is_deprecated": false,
     "deprecation_message": null,
+    "is_paused": false,
+    "pause_reason": null
+  },
+  {
+    "model_tag": "gemini-3.1-flash-image",
+    "provider": "google",
+    "provider_model_id": "gemini-3.1-flash-image",
+    "display_name": "Gemini 3.1 Flash Image (Nano Banana 2)",
+    "description": "Fast Gemini image model; 512px/1K/2K/4K, up to 14 reference images",
+    "capabilities": {
+      "operation": "image_generation",
+      "streaming": false
+    },
+    "context_length": null,
+    "max_output_tokens": null,
+    "pricing_tier": "premium",
+    "fallback_model_tag": "gemini-nano-banana-2.1",
+    "priority": 0,
+    "is_active": true,
+    "is_deprecated": true,
+    "deprecation_message": "Deprecated by Google 2026-10-06 (no shutdown date announced); use gemini-nano-banana-2.1.",
     "is_paused": false,
     "pause_reason": null
   },
@@ -1835,6 +1856,39 @@
     "provider_model_id": "gpt-6-astra",
     "display_name": "GPT-6 Astra",
     "description": "GPT-6 Astra \u2014 OpenAI frontier generation (2026-09-03); 1.05M context, reasoning effort low\u2192max",
+    "capabilities": {
+      "pdf": true,
+      "audio": false,
+      "tools": true,
+      "vision": true,
+      "operation": "chat",
+      "streaming": true,
+      "effort_levels": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "default_effort": "medium"
+    },
+    "context_length": 1050000,
+    "max_output_tokens": 128000,
+    "pricing_tier": "premium",
+    "fallback_model_tag": null,
+    "priority": 0,
+    "is_active": true,
+    "is_deprecated": false,
+    "deprecation_message": null,
+    "is_paused": false,
+    "pause_reason": null
+  },
+  {
+    "model_tag": "gpt-6.1-sol",
+    "provider": "openai",
+    "provider_model_id": "gpt-6.1-sol",
+    "display_name": "GPT-6.1 Sol",
+    "description": "GPT-6.1 Sol (2026-10): near-Astra performance at $2/$10 with cache reads at $0.10; 1.05M context, 128K output; effort low..max default medium (none/minimal rejected)",
     "capabilities": {
       "pdf": true,
       "audio": false,
