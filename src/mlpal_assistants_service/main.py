@@ -918,7 +918,9 @@ async def ready(request: Request) -> HealthResponse:
         # Probes (k8s readinessProbe, compose healthcheck, LB target groups)
         # look at the STATUS CODE — a 200 "not_ready" keeps a dead-DB pod in
         # rotation serving 500s.
-        return JSONResponse(status_code=503, content=body.model_dump())
+        # mode="json": the body carries a datetime, which json.dumps cannot take as-is;
+        # the plain dump turned every not-ready answer into a 500.
+        return JSONResponse(status_code=503, content=body.model_dump(mode="json"))
     return body
 
 
