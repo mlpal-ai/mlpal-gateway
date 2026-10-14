@@ -1372,7 +1372,12 @@ class GoogleAdapter(BaseAdapter):
         return [{"function_declarations": function_declarations}]
 
     def _convert_tool_choice(self, tool_choice: str | dict) -> dict[str, Any]:
-        """Convert tool_choice to Google format."""
+        """Convert tool_choice to Google's tool_config.
+
+        Accepts the gateway's string forms (auto / none / required / a tool
+        name), the OpenAI-style forced dict ``{"type": "function", "function":
+        {"name": ...}}``, and a native ``tool_config`` dict, which passes through.
+        """
         if isinstance(tool_choice, str):
             if tool_choice == "auto":
                 return {"function_calling_config": {"mode": "AUTO"}}
@@ -1388,6 +1393,9 @@ class GoogleAdapter(BaseAdapter):
                         "allowed_function_names": [tool_choice],
                     }
                 }
+        forced = (tool_choice.get("function") or {}).get("name") if tool_choice.get("type") == "function" else None
+        if forced:
+            return {"function_calling_config": {"mode": "ANY", "allowed_function_names": [forced]}}
         return tool_choice
 
     def _prepare_schema_for_google(self, schema: dict[str, Any]) -> dict[str, Any]:
