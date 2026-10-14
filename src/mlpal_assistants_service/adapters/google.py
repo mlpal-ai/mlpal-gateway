@@ -76,7 +76,17 @@ _THINKING_LIMITS: dict[str, tuple[bool, int]] = {
     # Verified against the live API 2026-08-14: accepts 0 (disable), 1, 128,
     # and -1 (dynamic) — unlike 3.6-flash, thinking is fully optional here.
     "gemini-3.7-flash": (True, 1),
+    # Verified against the live API 2026-10-14: accepts 0 (disable), 1, 128 and
+    # -1; levels are the documented knob, and a budget next to a level is a 400.
+    "gemini-4-argon": (True, 1),
 }
+
+# Gemini families with a thinking knob (budget or level). Gemini 4 has levels only.
+_THINKING_FAMILIES = ("gemini-2.5", "gemini-3", "gemini-4")
+
+
+def _has_thinking(model: str) -> bool:
+    return any(family in model for family in _THINKING_FAMILIES)
 
 
 def _thinking_limits(model: str) -> tuple[bool, int]:
@@ -112,7 +122,7 @@ def _apply_thinking_output_reserve(
     # budget cap below would silently replace it (and can disable thinking).
     if getattr(config.get("thinking_config"), "thinking_level", None):
         return
-    if "gemini-3" not in model and "gemini-2.5" not in model:
+    if not _has_thinking(model):
         return
     can_disable, min_active = _thinking_limits(model)
     desired = int(max_tokens) - reserve
@@ -245,7 +255,8 @@ class GoogleAdapter(BaseAdapter):
     - Streaming
 
     Models:
-    - gemini-3.1-pro-preview (latest, 4-level thinking)
+    - gemini-4-argon (frontier, thinking levels low/medium/high)
+    - gemini-3.1-pro-preview (4-level thinking)
     - gemini-3-flash-preview (fast, multimodal)
     - gemini-2.5-pro (stable, thinking capabilities)
     - gemini-2.5-flash (fast, efficient)
@@ -255,6 +266,18 @@ class GoogleAdapter(BaseAdapter):
 
     # Model capabilities registry - Gemini has broad multimodal support
     MODEL_CAPABILITIES: dict[str, ModelCapabilities] = {
+        # Gemini 4 family - thinking levels low/medium/high (minimal rejected); explicit
+        # caching unsupported, implicit cache hits arrive in usage_metadata.
+        "gemini-4-argon": ModelCapabilities(
+            supports_images=True,
+            supports_pdf=True,
+            supports_audio=True,
+            supports_video=True,
+            supports_tools=True,
+            supports_structured_output=True,
+            max_context_tokens=1048576,
+            max_output_tokens=65536,
+        ),
         # Gemini 3.1 family - latest with 4-level thinking (minimal, low, medium, high)
         "gemini-3.1-pro-preview": ModelCapabilities(
             supports_images=True,
@@ -573,6 +596,8 @@ class GoogleAdapter(BaseAdapter):
                 if tool_choice:
                     config["tool_config"] = self._convert_tool_choice(tool_choice)
                 # Enable thinking mode for thought_signature support in multi-turn tool calling
+                # Gemini 4 keeps its default level (medium) and still emits thought
+                # signatures, so no config is forced for it.
                 # Gemini 3.1 uses 4-level thinking (minimal, low, medium, high)
                 # Gemini 3 uses 2-level thinking (low, high) - deprecated March 9, 2026
                 # Gemini 2.5 uses thinking_budget
@@ -793,6 +818,8 @@ class GoogleAdapter(BaseAdapter):
                 if tool_choice:
                     config["tool_config"] = self._convert_tool_choice(tool_choice)
                 # Enable thinking mode for thought_signature support in multi-turn tool calling
+                # Gemini 4 keeps its default level (medium) and still emits thought
+                # signatures, so no config is forced for it.
                 # Gemini 3.1 uses 4-level thinking (minimal, low, medium, high)
                 # Gemini 3 uses 2-level thinking (low, high) - deprecated March 9, 2026
                 # Gemini 2.5 uses thinking_budget
@@ -810,7 +837,7 @@ class GoogleAdapter(BaseAdapter):
             # Surface the model's thoughts (thinking) as a distinct channel when
             # the caller opts in. Augments any tool-driven thinking_config rather
             # than overriding its level/budget.
-            if stream_thinking and ("gemini-3" in model or "gemini-2.5" in model):
+            if stream_thinking and _has_thinking(model):
                 tc = config.get("thinking_config")
                 if tc is not None:
                     tc.include_thoughts = True

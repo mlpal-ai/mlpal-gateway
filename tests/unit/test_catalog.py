@@ -32,6 +32,7 @@ RATES = {
     "gpt-5.5": ("openai", "2.50", "15"),
     "gpt-5.6-luna": ("openai", "1", "6"),             # blended  2.250
     "gemini-3.5-flash": ("google", "0.30", "2.50"),   # blended  0.850
+    "gemini-4-argon": ("google", "2", "10"),          # blended 4.000; Google flagship (gen 4.0 rank 1)
     # Google flagship `pro` sits on an OLDER generation (3.1) than the newer
     # `flash` (3.5) — the edge case: rank must beat generation in flagship pick.
     "gemini-3.1-pro-preview": ("google", "1.25", "10"),
@@ -212,8 +213,17 @@ async def test_lineage_and_flagship_resolution():
     # flagships: OpenAI -> newest gen's rank-1; Google -> pro (older gen) NOT flash;
     # Anthropic -> fable (rank 1, above the opus tier) even though opus-5 exists
     assert cat["flagships"]["openai"] == "gpt-6-astra"   # gen 6.0 rank-1 supersedes sol
-    assert cat["flagships"]["google"] == "gemini-3.1-pro-preview"
+    assert cat["flagships"]["google"] == "gemini-4-argon"   # gen 4.0 rank-1 supersedes 3.1 pro
     assert cat["flagships"]["anthropic"] == "claude-fable-5"
+
+
+@pytest.mark.asyncio
+async def test_flagship_rank_beats_generation_when_newest_is_dark():
+    """With gemini-4-argon unavailable, Google's flagship is the rank-1 `pro` on the
+    OLDER 3.1 generation, not the newer-numbered 3.5 flash — rank dominates."""
+    router, pricing = _mocks(unavailable={"gemini-4-argon"})
+    cat = await build_catalog("coding", router, pricing)
+    assert cat["flagships"]["google"] == "gemini-3.1-pro-preview"
 
 
 @pytest.mark.asyncio

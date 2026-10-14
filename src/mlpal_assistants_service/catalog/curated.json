@@ -1,6 +1,6 @@
 {
   "schema": 3,
-  "updated": "2026-10-09",
+  "updated": "2026-10-14",
   "_note": "Declared, deterministic curation only. Objective axes (cost, context, caps, throughput) merge live and are never here. THREE declared blocks: (1) `lineage` = (provider, generation, tier, tier_rank) — structural, stable, placed once per model; powers deterministic 'provider best' resolution and same-tier version ordering. tier_rank is 1=flagship WITHIN a provider (not cross-provider). (2) `cards` = the deterministic model card: a short `summary` + published `benchmarks` (sourced + dated). The card is NEVER mutated by feedback. (3) MEASURED quality (the feedback loop, see model_feedback) is served ORTHOGONALLY as `measured`, alongside — never merged into — the card. A model absent here is still fully routable on the objective axes.",
 
   "lineage": {
@@ -44,6 +44,7 @@
     "gpt-5-mini":                  {"generation": 5.0, "tier": "mini",   "tier_rank": 3},
     "gpt-5-nano":                  {"generation": 5.0, "tier": "nano",   "tier_rank": 4},
 
+    "gemini-4-argon":              {"generation": 4.0, "tier": "pro",        "tier_rank": 1},
     "gemini-3.1-pro-preview":      {"generation": 3.1, "tier": "pro",        "tier_rank": 1},
     "gemini-3.6-flash":            {"generation": 3.6, "tier": "flash",      "tier_rank": 2},
     "gemini-3.5-flash":            {"generation": 3.5, "tier": "flash",      "tier_rank": 2},
@@ -123,6 +124,9 @@
     "gpt-5.5-pro": {
       "summary": "OpenAI GPT-5.5 Pro — extra test-time compute for the hardest problems."
     },
+    "gemini-4-argon": {
+      "summary": "Google Gemini 4 Argon (GA 2026-10-13) — Google's frontier model for hard software engineering and knowledge work. $2/$10 through 2026-11-30, then $4/$20; implicit cache hits $0.10 (0.05x), batch and flex 50% off. 1M unified context shared by input, thinking and output; 64K output (1M with background long decode, not exposed); thinking low/medium/high default medium, minimal/xhigh/max rejected, a thinking budget next to a level is a 400; temperature/top_p/top_k accepted but ignored; explicit caching unsupported; tools incl. forced tool_choice, thought signatures, structured output, search grounding. No vendor benchmark table at onboarding. Probe-verified first-party 2026-10-14."
+    },
     "gemini-3.1-pro-preview": {
       "summary": "Google Gemini 3.1 Pro — flagship reasoning with very long context (1M+) and multimodal input."
     },
@@ -147,8 +151,8 @@
         },
         "frontier": {
           "model": "claude-opus-5-5",
-          "alternates": ["claude-opus-5", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "claude-fable-5"],
-          "good_for": "hard bounded coding + reasoning subtasks - Fable-class quality (leads Terminal-Bench/FrontierCode) at the lowest frontier cost; gpt-6-sol alternate for terminal long-horizon / max throughput"
+          "alternates": ["claude-opus-5", "gemini-4-argon", "gpt-6-astra", "gpt-6.1-sol", "gpt-6-sol", "claude-fable-5"],
+          "good_for": "hard bounded coding + reasoning subtasks - Fable-class quality (leads Terminal-Bench/FrontierCode) at the lowest frontier cost; gemini-4-argon alternate (Google frontier at $2/$10 through 2026-11-30, unbenched here); gpt-6-sol alternate for terminal long-horizon / max throughput"
         },
         "mid": {
           "model": "gpt-6.1-sol",

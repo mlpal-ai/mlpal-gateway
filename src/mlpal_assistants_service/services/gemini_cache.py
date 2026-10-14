@@ -64,6 +64,16 @@ def _cache_key(model: str, system_instruction: str | None, gtools: Any) -> str:
     return _KEY_PREFIX + h.hexdigest()
 
 
+# Models whose API rejects explicit cachedContent ("Explicit caching is not
+# supported for models/gemini-4-argon", verified 2026-10-14). They cache
+# implicitly and report hits in usage_metadata, so there is nothing to create.
+_NO_EXPLICIT_CACHE_PREFIXES = ("gemini-4",)
+
+
+def supports_explicit_cache(model: str) -> bool:
+    return not model.startswith(_NO_EXPLICIT_CACHE_PREFIXES)
+
+
 def _too_small(system_instruction: str | None, gtools: Any) -> bool:
     approx_chars = len(system_instruction or "") + len(json.dumps(gtools or [], default=str))
     return approx_chars < get_settings().messages_v2_cache_min_tokens * _CHARS_PER_TOKEN
@@ -78,6 +88,9 @@ async def get_or_create_cache(
 ) -> str | None:
     """Return a live cachedContent name for (model, system, tools), creating it
     once and recording it in Redis for reuse. None → caller uses the normal path."""
+    if not supports_explicit_cache(model):
+        logger.debug(f"gemini_cache: {model} has no explicit cache; implicit caching applies")
+        return None
     if _too_small(system_instruction, gtools):
         return None  # cost guard: not worth a create + storage, and Gemini would reject it
     redis = _get_redis()

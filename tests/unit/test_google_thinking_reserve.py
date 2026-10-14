@@ -57,6 +57,18 @@ def test_pro_floors_at_128(monkeypatch):
     assert cfg["thinking_config"].thinking_budget == 128  # pro can't disable thinking
 
 
+def test_gemini_4_disables_thinking_at_tiny_budget(monkeypatch):
+    # Argon accepts budget=0 (verified live 2026-10-14), so a tight max_tokens
+    # turns thinking off rather than returning empty text at finish=max_tokens.
+    _reserve(monkeypatch, 256)
+    cfg: dict = {}
+    g._apply_thinking_output_reserve(cfg, "gemini-4-argon", 256, has_tools=False)
+    assert cfg["thinking_config"].thinking_budget == 0
+    cfg = {}
+    g._apply_thinking_output_reserve(cfg, "gemini-4-argon", 2048, has_tools=False)
+    assert cfg["thinking_config"].thinking_budget == 1792
+
+
 def test_large_budget_reserves_output(monkeypatch):
     _reserve(monkeypatch, 256)
     cfg: dict = {}

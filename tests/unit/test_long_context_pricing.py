@@ -107,6 +107,9 @@ def test_catalog_rows_and_sync_fields():
     assert by["gpt-6-luna"]["long_context_threshold"] == 272000 and Decimal(by["gpt-6-luna"]["long_input_rate"]) == Decimal("0.2")
     assert by["gemini-3.1-pro-preview"]["long_context_threshold"] == 200000 and Decimal(by["gemini-3.1-pro-preview"]["cache_read_rate"]) == Decimal("0.2")
     assert by["gemini-2.5-pro"]["long_cache_read_rate"] is None
+    # Gemini 4 Argon: flat $2/$10 to 1M, implicit cache hits at 0.05x, no long tier
+    assert by["gemini-4-argon"].get("long_context_threshold") is None
+    assert Decimal(by["gemini-4-argon"]["cache_read_rate"]) == Decimal("0.1")
     for tag in ("claude-opus-5-5", "claude-sonnet-5"):
         assert by[tag].get("long_context_threshold") is None  # Anthropic: 1M at standard; no tier
     # OpenAI long tiers past 272k (rate card 2026-09-30)

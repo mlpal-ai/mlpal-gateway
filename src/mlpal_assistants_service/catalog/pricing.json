@@ -401,6 +401,20 @@
     "output_cu_rate": "0.45000000"
   },
   {
+    "model_tag": "gemini-4-argon",
+    "operation": "chat",
+    "tier": "premium",
+    "input_rate": "2.00000000",
+    "output_rate": "10.00000000",
+    "rate_unit": "per_1m_tokens",
+    "markup_multiplier": "1.00",
+    "effective_date": "2026-10-13",
+    "cu_to_dollar": "10.00",
+    "input_cu_rate": "0.60000000",
+    "output_cu_rate": "3.00000000",
+    "cache_read_rate": "0.10000000"
+  },
+  {
     "model_tag": "gemini-3.1-pro-preview",
     "operation": "chat",
     "tier": "premium",

@@ -78,6 +78,18 @@ async def test_small_prefix_is_not_cached(redis):
 
 
 @pytest.mark.asyncio
+async def test_model_without_explicit_cache_is_skipped_before_any_create(redis):
+    # Gemini 4 rejects cachedContent outright; the gate must short-circuit so a
+    # client opting in gets the implicit cache, not a failing create per request.
+    client = _fake_genai()
+    assert gemini_cache.supports_explicit_cache("gemini-4-argon") is False
+    assert gemini_cache.supports_explicit_cache("gemini-3.5-flash") is True
+    assert await gemini_cache.get_or_create_cache(client, "gemini-4-argon", BIG_SYSTEM, None, 3600) is None
+    client.aio.caches.create.assert_not_awaited()
+    assert redis.store == {}
+
+
+@pytest.mark.asyncio
 async def test_no_redis_disables_caching(monkeypatch):
     monkeypatch.setattr(gemini_cache, "_get_redis", lambda: None)
     client = _fake_genai()
